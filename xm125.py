@@ -75,9 +75,9 @@ COMMAND_RESET_MODULE = 1381192737  # 0x52535421
 # Enumerations
 class ThresholdMethod:
     FIXED_AMPLITUDE = 1
-    FIXED_STRENGTH = 2
+    RECORDED = 2
     CFAR = 3
-    RECORDED = 4
+    FIXED_STRENGTH = 4
 
 class PeakSortingMethod:
     CLOSEST = 1
@@ -102,9 +102,9 @@ DetectorConfig = {
     'max_profile': Profile.PROFILE1,
     'prf': None,  # PRF not defined in provided info
     'close_range_leakage_cancellation': False,  # Set to True if measuring close to sensor (<10 cm)
-    'signal_quality': 15.0,  # dB
+    'signal_quality': 30.0,  # dB
     'threshold_method': ThresholdMethod.CFAR,
-    'peaksorting_method': PeakSortingMethod.STRONGEST,
+    'peaksorting_method': PeakSortingMethod.CLOSEST,
     'reflector_shape': ReflectorShape.GENERIC,
     'num_frames_in_recorded_threshold': 100,
     'fixed_threshold_value': 100.0,  # factor 1000 larger
@@ -120,6 +120,7 @@ INT_PIN_NUM = 13      # GPIO13 (D7)
 
 # Measurement Interval
 MEASUREMENT_INTERVAL = 0.1  # seconds
+POLL_INTERVAL = 10 # ms
 
 # Initialize I2C (Adjust pins if necessary)
 i2c = I2C(scl=Pin(5), sda=Pin(4), freq=100000)  # GPIO5 (D1) as SCL, GPIO4 (D2) as SDA
@@ -201,7 +202,7 @@ def wait_for_int(timeout=10):
         # print(f"INT pin state: {current_state}")  # Debug
         if current_state == 1:
             return True
-        time.sleep_ms(100)
+        time.sleep_ms(POLL_INTERVAL)
     # print("Timeout waiting for INT pin.")  # Debug
     return False
 
@@ -279,7 +280,7 @@ def apply_config_and_calibrate():
             return False
         if not (status & 0x80000000):  # BUSY mask
             break
-        time.sleep_ms(100)
+        time.sleep_ms(POLL_INTERVAL)
     # print("Configuration and calibration completed.")  # Debug
 
     # Check for Detector Errors
@@ -310,7 +311,7 @@ def perform_recalibration():
             return False
         if not (status & 0x80000000):  # BUSY mask
             break
-        time.sleep_ms(100)
+        time.sleep_ms(POLL_INTERVAL)
     # print("Re-calibration completed.")  # Debug
 
     # Check for Detector Errors
@@ -341,7 +342,7 @@ def measure_distance():
             return (None, None)
         if not (status & 0x80000000):  # BUSY mask
             break
-        time.sleep_ms(100)
+        time.sleep_ms(POLL_INTERVAL)
     # print("Measurement completed.")  # Debug
 
     # Read Distance Result
@@ -436,6 +437,7 @@ def main():
                     # print(f"Measured {len(distances)} peak(s).")  # Debug
                     for idx, (dist, stren) in enumerate(zip(distances, strengths)):
                         print(f"Peak{idx}: Distance = {dist:.3f} m | Strength = {stren:.3f} dB")
+                    print("")
                 else:
                     # print("No peaks detected in this measurement.")  # Debug
                     pass
