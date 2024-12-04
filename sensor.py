@@ -14,6 +14,9 @@ from enum import IntEnum
 import threading
 import queue
 import logging
+import board
+import adafruit_hcsr04
+import json
 
 # ============================
 # Constants and Configuration
@@ -90,10 +93,18 @@ COMMAND_DISABLE_UART_LOGS = 33
 COMMAND_LOG_CONFIGURATION = 34
 COMMAND_RESET_MODULE = 1381192737  # 0x52535421
 
+# Data file path
+DATA_FILE = 'sensor_data.jsonl'
+
 # GPIO Pin Configuration
 # MPU6050 does not require additional GPIO pins
 XM125_WAKE_UP_PIN = 17  # GPIO17 (Physical pin 11)
 XM125_INT_PIN = 27       # GPIO27 (Physical pin 13)
+
+# HC-SR04 GPIO Pins
+HC_SR04_TRIG = board.D23  # 使用board库的D23引脚
+HC_SR04_ECHO = board.D24  # 使用board库的D24引脚
+HC_SR04_INTERVAL = 0.1    # 每0.1秒测量一次
 
 # Measurement Intervals
 MPU6050_INTERVAL = 0.1   # 100 milliseconds
@@ -173,6 +184,44 @@ bus = smbus2.SMBus(I2C_BUS)
 
 # Create a lock to synchronize I2C bus access
 i2c_lock = threading.Lock()
+# ============================
+# HC_SR04 Class
+# ============================
+
+class HC_SR04_Sensor:
+    def __init__(self, trig_pin, echo_pin, data_queue=None):
+        self.trig_pin = trig_pin
+        self.echo_pin = echo_pin
+        self.data_queue = data_queue  # 用于将数据传递到主线程
+        self.running = True
+        self.sonar = adafruit_hcsr04.HCSR04(trigger_pin=self.trig_pin, echo_pin=self.echo_pin)
+    
+    def run(self):
+        """
+        运行HC-SR04的测量循环。
+        """
+        logging.info("HC-SR04 measurement thread started.")
+        while self.running:
+            try:
+                distance = self.sonar.distance  # 获取距离，单位为厘米
+                distance_m = distance / 100.0    # 转换为米
+                data = {
+                    'type': 'HC_SR04',
+                    'distance_m': distance_m,
+                    'timestamp': time.time()
+                }
+                if self.data_queue and distance is not None:
+                    self.data_queue.put(data)
+                time.sleep(HC_SR04_INTERVAL)
+            except RuntimeError:
+                logging.warning("HC-SR04 measurement failed. Retrying!")
+            except Exception as e:
+                logging.error(f"Exception in HC-SR04 run loop: {e}")
+                self.running = False
+        logging.info("HC-SR04 measurement thread terminated.")
+    
+    def stop(self):
+        self.running = False
 
 # ============================
 # MPU6050 Class
@@ -233,15 +282,15 @@ class MPU6050:
                 data = {
                     'type': 'MPU6050',
                     'acc_change': {
-                        'ΔX': acc_dx,
-                        'ΔY': acc_dy,
-                        'ΔZ': acc_dz,
+                        'dX': acc_dx,
+                        'dY': acc_dy,
+                        'dZ': acc_dz,
                         'Total Change': acc_total
                     },
                     'gyro_change': {
-                        'ΔX': gyro_dx,
-                        'ΔY': gyro_dy,
-                        'ΔZ': gyro_dz,
+                        'dX': gyro_dx,
+                        'dY': gyro_dy,
+                        'dZ': gyro_dz,
                         'Total Change': gyro_total
                     },
                     'timestamp': time.time()
@@ -597,7 +646,7 @@ def calculate_change(prev, current):
 def main():
     # Create a data queue
     data_queue = queue.Queue()
-
+    
     # Initialize MPU6050
     mpu = MPU6050(bus, data_queue=data_queue)
     mpu.initialize()
@@ -605,50 +654,71 @@ def main():
     # Initialize XM125
     xm125 = XM125(bus, XM125_WAKE_UP_PIN, XM125_INT_PIN, data_queue=data_queue)
 
+    # Initialize HC_SR04
+    hc_sr04 = HC_SR04_Sensor(HC_SR04_TRIG, HC_SR04_ECHO, data_queue=data_queue)
+
     # Create threads
     mpu_thread = threading.Thread(target=mpu.run, name="MPU6050-Thread")
     xm125_thread = threading.Thread(target=xm125.run, name="XM125-Thread")
+    hc_sr04_thread = threading.Thread(target=hc_sr04.run, name="HC_SR04-Thread")
 
     # Start threads
     mpu_thread.start()
     xm125_thread.start()
+    hc_sr04_thread.start()
 
-    try:
-        while True:
-            try:
-                data = data_queue.get(timeout=1)  # Block and wait for data
-                if data['type'] == 'MPU6050':
-                    acc = data['acc_change']
-                    gyro = data['gyro_change']
-                    timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(data['timestamp']))
-                    logging.info(f"MPU6050 Acceleration Change: ΔX={acc['ΔX']:.4f} g, ΔY={acc['ΔY']:.4f} g, ΔZ={acc['ΔZ']:.4f} g, Total Change={acc['Total Change']:.4f} g")
-                    logging.info(f"MPU6050 Gyroscope Change: ΔX={gyro['ΔX']:.4f} °/s, ΔY={gyro['ΔY']:.4f} °/s, ΔZ={gyro['ΔZ']:.4f} °/s, Total Change={gyro['Total Change']:.4f} °/s")
-                elif data['type'] == 'XM125':
-                    distances = data['distances_m']
-                    strengths = data['strengths_db']
-                    timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(data['timestamp']))
-                    if distances and strengths:
-                        for idx, (dist, stren) in enumerate(zip(distances, strengths)):
-                            logging.info(f"XM125 Peak{idx}: Distance = {dist:.3f} m | Strength = {stren:.3f} dB")
-                    else:
-                        logging.info("XM125 No peaks detected or measurement failed.")
-            except queue.Empty:
-                continue  # No new data, continue looping
-    except KeyboardInterrupt:
-        logging.info("Detection stopped by user.")
-    finally:
-        # Stop threads
-        mpu.stop()
-        xm125.stop()
+    # Open data file in write mode (overwrite each run)
+    with open(DATA_FILE, 'w') as data_file:
+        try:
+            while True:
+                try:
+                    data = data_queue.get(timeout=1)  # Block and wait for data
+                    if data['type'] == 'MPU6050':
+                        acc = data['acc_change']
+                        gyro = data['gyro_change']
+                        timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(data['timestamp']))
+                        logging.info(f"MPU6050 Acceleration Change: dX={acc['dX']:.4f} g, dY={acc['dY']:.4f} g, dZ={acc['dZ']:.4f} g, Total Change={acc['Total Change']:.4f} g")
+                        logging.info(f"MPU6050 Gyroscope Change: dX={gyro['dX']:.4f} °/s, dY={gyro['dY']:.4f} °/s, dZ={gyro['dZ']:.4f} °/s, Total Change={gyro['Total Change']:.4f} °/s")
+                    elif data['type'] == 'XM125':
+                        distances = data['distances_m']
+                        strengths = data['strengths_db']
+                        timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(data['timestamp']))
+                        if distances and strengths:
+                            for idx, (dist, stren) in enumerate(zip(distances, strengths)):
+                                logging.info(f"XM125 Peak{idx}: Distance = {dist:.3f} m | Strength = {stren:.3f} dB")
+                        else:
+                            logging.info("XM125 No peaks detected or measurement failed.")
+                    elif data['type'] == 'HC_SR04':
+                        distance = data['distance_m']
+                        timestamp = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(data['timestamp']))
+                        if distance is not None:
+                            logging.info(f"HC-SR04 Distance Measurement: {distance:.2f} meters")
+                        else:
+                            logging.info("HC-SR04 Distance Measurement Failed or Timed Out.")
+                    
+                    # Write data to the data file as JSON
+                    json.dump(data, data_file)
+                    data_file.write('\n')  # Newline for each JSON object
+                    data_file.flush()  # Ensure data is written to disk
+                except queue.Empty:
+                    continue  # No new data, continue looping
+        except KeyboardInterrupt:
+            logging.info("Detection stopped by user.")
+        finally:
+            # Stop threads
+            mpu.stop()
+            xm125.stop()
+            hc_sr04.stop()
 
-        # Wait for threads to finish
-        mpu_thread.join()
-        xm125_thread.join()
+            # Wait for threads to finish
+            mpu_thread.join()
+            xm125_thread.join()
+            hc_sr04_thread.join()
 
-        # Clean up GPIO and close I2C bus
-        GPIO.cleanup()
-        bus.close()
-        logging.info("Resources have been released.")
+            # Clean up GPIO and close I2C bus
+            GPIO.cleanup()
+            bus.close()
+            logging.info("Resources have been released.")
 
 if __name__ == "__main__":
     main()
