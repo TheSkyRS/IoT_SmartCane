@@ -39,8 +39,8 @@ KALMAN_ERROR_COVARIANCE = 1.0  # 估计误差协方差初始值
 DISTANCE_MATCH_THRESHOLD = 0.15  # 米
 
 # 声音参数
-SAMPLE_RATE = 44100  # 采样率
-CHUNK_SIZE = 1024    # 音频块大小
+SAMPLE_RATE = 6000  # 采样率
+CHUNK_SIZE = 150    # 音频块大小
 
 # ============================
 # 状态变量
