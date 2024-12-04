@@ -97,7 +97,7 @@ class XM125DataProcessor:
         strengths = data.get('strengths_db', [])
         if distances and strengths and len(distances) == len(strengths):
             # 直接获取最近的距离
-            min_distance = min(distances)
+            min_distance = distances[0]
             print(f"[INFO] Nearest distance: {min_distance:.2f} m")
 
             if OBSTACLE_DISTANCE_MIN <= min_distance <= OBSTACLE_DISTANCE_THRESHOLD:

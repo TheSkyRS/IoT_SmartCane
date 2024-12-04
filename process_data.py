@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-处理 HC_SR04 和 MPU6050 传感器数据的实时算法，包括事件检测和音频提示
+综合处理 HC_SR04、MPU6050 和 XM125 传感器数据的实时算法，
+包括事件检测、音频提示和障碍物距离提示。
 """
 
 import json
@@ -27,16 +28,24 @@ warnings.filterwarnings("ignore", category=WavFileWarning)
 DATA_FILE = 'sensor_data.jsonl'
 
 # HC_SR04 阈值设置
-UP_STEP_DISTANCE_THRESHOLD = 0.3   # 米，小于此距离认为是上台阶
-DOWN_STEP_DISTANCE_THRESHOLD = 0.5  # 米，大于此距离认为是下台阶
-HC_SR04_DEBOUNCE_TIME = 1.0        # 秒，防抖时间
-HC_SR04_COOLDOWN_TIME = 3.0        # 秒，提示音冷却时间
+UP_STEP_DISTANCE_THRESHOLD = 0.3     # 米，小于此距离认为是上台阶
+DOWN_STEP_DISTANCE_THRESHOLD = 0.5   # 米，大于此距离认为是下台阶
+HC_SR04_DEBOUNCE_TIME = 1.0          # 秒，防抖时间
+HC_SR04_COOLDOWN_TIME = 3.0          # 秒，提示音冷却时间
 
 # MPU6050 阈值设置
-FALL_ACCEL_THRESHOLD = 2.5         # g，加速度阈值，超过此值认为是摔倒
-FALL_GYRO_THRESHOLD = 300          # °/s，角速度阈值
-FALL_DEBOUNCE_TIME = 2.0           # 秒，防抖时间
-FALL_COOLDOWN_TIME = 5.0           # 秒，提示音冷却时间
+FALL_ACCEL_THRESHOLD = 2.5           # g，加速度阈值，超过此值认为是摔倒
+FALL_GYRO_THRESHOLD = 300            # °/s，角速度阈值
+FALL_DEBOUNCE_TIME = 2.0             # 秒，防抖时间
+FALL_COOLDOWN_TIME = 5.0             # 秒，提示音冷却时间
+
+# XM125 阈值设置
+OBSTACLE_DISTANCE_THRESHOLD = 0.9    # 米
+OBSTACLE_DISTANCE_MIN = 0.1          # 米
+
+# 频率映射
+FREQ_MAX = 2000  # Hz
+FREQ_MIN = 200   # Hz
 
 # 声音参数
 SAMPLE_RATE = 44100  # 采样率
@@ -57,14 +66,27 @@ ALERT_PRIORITIES = {
 # 辅助函数和类
 # ============================
 
+def map_distance_to_frequency(distance):
+    """
+    将障碍物距离映射到频率范围内。
+    """
+    freq = FREQ_MIN + (OBSTACLE_DISTANCE_THRESHOLD - distance) * \
+        (FREQ_MAX - FREQ_MIN) / (OBSTACLE_DISTANCE_THRESHOLD - OBSTACLE_DISTANCE_MIN)
+    freq = np.clip(freq, FREQ_MIN, FREQ_MAX)
+    return freq
+
 class AudioPlayer:
+    """
+    管理音频播放，包括左声道的频率声音和右声道的预加载警告音。
+    """
     def __init__(self, sample_rate=44100, device=None):
         self.sample_rate = sample_rate
+        self.frequency = 0               # 左声道频率
         self.phase = 0
         self.lock = threading.Lock()
         self.device = device
         self.stream = sd.OutputStream(
-            channels=1,
+            channels=2,  # 立体声
             callback=self.audio_callback,
             samplerate=self.sample_rate,
             device=self.device,
@@ -72,39 +94,52 @@ class AudioPlayer:
             dtype='float32'
         )
         self.alert_lock = threading.Lock()
-        self.preloaded_sounds = {}  # 预加载的音频数据
+        self.preloaded_sounds = {}      # 预加载的音频数据
         self.alert_queue = queue.PriorityQueue()
         self.current_alert_sound = None
         self.alert_sound_position = 0
-        self.alerts_in_queue = set()  # 记录已在队列中的警告音
+        self.alerts_in_queue = set()    # 记录已在队列中的警告音
 
         # 预加载警告音频
         for sound_file in [UP_AUDIO_FILE, DOWN_AUDIO_FILE, FALL_AUDIO_FILE]:
+            if not os.path.exists(sound_file):
+                print(f"[ERROR] Audio file '{sound_file}' not found.")
+                continue
             samplerate, data = wavfile.read(sound_file)
             data = data.astype(np.float32) / np.iinfo(data.dtype).max  # 归一化数据
             if data.ndim > 1 and data.shape[1] > 1:
                 data = data.mean(axis=1)  # 将立体声转换为单声道
             self.preloaded_sounds[sound_file] = data
+            print(f"[DEBUG] Loaded '{sound_file}' successfully.")
 
     def start(self):
         self.stream.start()
+        print("[INFO] Audio stream started.")
 
     def stop(self):
         self.stream.stop()
         self.stream.close()
+        print("[INFO] Audio stream stopped.")
 
     def play_alert_sound(self, sound_file):
+        """
+        添加警告音到队列中，避免重复添加。
+        """
         priority = ALERT_PRIORITIES.get(sound_file, 10)  # 默认优先级为 10
         with self.alert_lock:
             if sound_file not in self.alerts_in_queue:
                 self.alert_queue.put((priority, sound_file))
                 self.alerts_in_queue.add(sound_file)
-                print(f"[DEBUG] Added '{sound_file}' to alert queue.")
+                print(f"[DEBUG] Added '{sound_file}' to alert queue with priority {priority}.")
 
     def audio_callback(self, outdata, frames, time_info, status):
+        """
+        音频回调函数，根据当前状态播放警告音或频率声音。
+        """
         if status:
-            print(status)
+            print(f"[WARNING] {status}")
 
+        # 处理右声道的警告音
         with self.alert_lock:
             if self.current_alert_sound is None and not self.alert_queue.empty():
                 # 获取优先级最高的警告音
@@ -112,30 +147,47 @@ class AudioPlayer:
                 self.current_alert_sound = self.preloaded_sounds.get(sound_file)
                 self.alert_sound_position = 0
                 self.alerts_in_queue.discard(sound_file)
-                print(f"[DEBUG] Now playing '{sound_file}'.")
+                print(f"[DEBUG] Now playing '{sound_file}' on right channel.")
 
-            if self.current_alert_sound is not None:
-                data = self.current_alert_sound
-                start = self.alert_sound_position
-                end = start + frames
-                chunk = data[start:end]
-                if len(chunk) < frames:
-                    # 警告音播放完毕，填充剩余部分
-                    outdata[:len(chunk), 0] = chunk
-                    outdata[len(chunk):, 0].fill(0)
-                    self.current_alert_sound = None
-                else:
-                    outdata[:, 0] = chunk
-                    self.alert_sound_position += frames
+        # 左声道：频率声音
+        with self.lock:
+            freq = self.frequency
+
+        if freq > 0:
+            t = (np.arange(frames) + self.phase) / self.sample_rate
+            left_channel = np.sin(2 * np.pi * freq * t).astype(np.float32)
+            print(f"[DEBUG] Playing frequency sound at {freq:.2f} Hz on left channel.")
+        else:
+            left_channel = np.zeros(frames, dtype=np.float32)
+
+        self.phase = (self.phase + frames) % self.sample_rate
+
+        # 右声道：警告音或静音
+        if self.current_alert_sound is not None:
+            data = self.current_alert_sound
+            start = self.alert_sound_position
+            end = start + frames
+            chunk = data[start:end]
+            if len(chunk) < frames:
+                # 警告音播放完毕，填充剩余部分
+                right_channel = np.concatenate((chunk, np.zeros(frames - len(chunk), dtype=np.float32)))
+                print(f"[DEBUG] Finished playing alert sound on right channel.")
+                self.current_alert_sound = None
             else:
-                # 没有警告音，静音
-                outdata[:, 0].fill(0)
+                right_channel = chunk
+                self.alert_sound_position += frames
+        else:
+            # 没有警告音，静音
+            right_channel = np.zeros(frames, dtype=np.float32)
 
-# ============================
-# 数据处理类
-# ============================
+        # 组合左右声道
+        outdata[:, 0] = left_channel
+        outdata[:, 1] = right_channel
 
 class SensorDataProcessor:
+    """
+    处理传感器数据，检测事件并触发音频提示。
+    """
     def __init__(self, audio_player):
         self.audio_player = audio_player
         self.last_hc_sr04_event_time = 0
@@ -151,6 +203,7 @@ class SensorDataProcessor:
         current_time = time.time()
         distance = data.get('distance_m')
         if distance is None:
+            print("[DEBUG] HC_SR04 data missing 'distance_m'.")
             return
 
         # 打印距离信息
@@ -158,6 +211,7 @@ class SensorDataProcessor:
 
         # 防抖处理
         if current_time - self.last_hc_sr04_event_time < HC_SR04_DEBOUNCE_TIME:
+            print("[DEBUG] HC_SR04 event ignored due to debounce.")
             return
 
         # 确定当前状态
@@ -176,14 +230,14 @@ class SensorDataProcessor:
                     # 播放上台阶提示音
                     self.audio_player.play_alert_sound(UP_AUDIO_FILE)
                     self.last_alert_times[UP_AUDIO_FILE] = current_time
-                    print("[INFO] Detected upward step. Playing 'up' audio.")
+                    print("[INFO] Detected upward step. Playing 'up' audio on right channel.")
             elif current_state == 'down':
                 # 冷却时间检查
                 if current_time - self.last_alert_times[DOWN_AUDIO_FILE] >= HC_SR04_COOLDOWN_TIME:
                     # 播放下楼梯提示音
                     self.audio_player.play_alert_sound(DOWN_AUDIO_FILE)
                     self.last_alert_times[DOWN_AUDIO_FILE] = current_time
-                    print("[INFO] Detected downward step. Playing 'down' audio.")
+                    print("[INFO] Detected downward step. Playing 'down' audio on right channel.")
 
         # 更新上一次状态
         self.last_hc_sr04_state = current_state
@@ -203,14 +257,36 @@ class SensorDataProcessor:
         if acc_total_change >= FALL_ACCEL_THRESHOLD or gyro_total_change >= FALL_GYRO_THRESHOLD:
             # 防抖处理
             if current_time - self.last_fall_event_time < FALL_DEBOUNCE_TIME:
+                print("[DEBUG] MPU6050 fall event ignored due to debounce.")
                 return
             # 冷却时间检查
             if current_time - self.last_alert_times[FALL_AUDIO_FILE] >= FALL_COOLDOWN_TIME:
                 # 检测到摔倒，播放提示音
                 self.audio_player.play_alert_sound(FALL_AUDIO_FILE)
                 self.last_alert_times[FALL_AUDIO_FILE] = current_time
-                print("[INFO] Fall detected. Playing 'fall' audio.")
+                print("[INFO] Fall detected. Playing 'fall' audio on right channel.")
             self.last_fall_event_time = current_time
+
+    def process_xm125_data(self, data):
+        distances = data.get('distances_m', [])
+        strengths = data.get('strengths_db', [])
+        if distances and strengths and len(distances) == len(strengths):
+            # 直接获取最近的距离
+            min_distance = distances[0]
+            print(f"[INFO] Nearest distance (XM125): {min_distance:.2f} m")
+
+            if OBSTACLE_DISTANCE_MIN <= min_distance <= OBSTACLE_DISTANCE_THRESHOLD:
+                freq = map_distance_to_frequency(min_distance)
+                self.audio_player.frequency = freq  # 设置左声道频率
+                print(f"[DEBUG] Playing frequency sound at {freq:.2f} Hz on left channel.")
+            else:
+                # 停止声音
+                self.audio_player.frequency = 0
+                print("[DEBUG] Obstacle out of range (XM125). Frequency sound stopped on left channel.")
+        else:
+            # 停止声音
+            self.audio_player.frequency = 0
+            print("[DEBUG] No valid XM125 data detected. Frequency sound stopped on left channel.")
 
     def process_data_entry(self, data):
         sensor_type = data.get('type')
@@ -219,20 +295,34 @@ class SensorDataProcessor:
             self.process_hc_sr04_data(data)
         elif sensor_type == 'MPU6050':
             self.process_mpu6050_data(data)
+        elif sensor_type == 'XM125':
+            self.process_xm125_data(data)
+        else:
+            print(f"[DEBUG] Unknown sensor type: {sensor_type}")
 
 # ============================
 # 文件事件处理类
 # ============================
 
 class DataFileHandler(FileSystemEventHandler):
+    """
+    处理文件修改事件，读取新数据并传递给数据处理器。
+    """
     def __init__(self, data_processor):
         super().__init__()
         self.data_processor = data_processor
-        self.file = open(DATA_FILE, 'r')
-        # 移动到文件末尾
-        self.file.seek(0, os.SEEK_END)
+        try:
+            self.file = open(DATA_FILE, 'r')
+            # 移动到文件末尾
+            self.file.seek(0, os.SEEK_END)
+            print(f"[DEBUG] Opened data file '{DATA_FILE}' successfully.")
+        except FileNotFoundError:
+            print(f"[ERROR] Data file '{DATA_FILE}' not found.")
+            self.file = None
 
     def on_modified(self, event):
+        if self.file is None:
+            return
         if event.src_path == os.path.abspath(DATA_FILE):
             self.process_new_data()
 
@@ -245,6 +335,7 @@ class DataFileHandler(FileSystemEventHandler):
                 data = json.loads(line)
                 self.data_processor.process_data_entry(data)
             except json.JSONDecodeError:
+                print("[DEBUG] Invalid JSON line encountered. Skipping.")
                 continue  # 忽略错误的 JSON 行
 
 # ============================
@@ -264,11 +355,6 @@ def main():
         # 指定音频设备索引（根据您的设备选择）
         device_index = 0  # 例如，使用索引为 0 的设备
 
-        # 检查音频文件是否存在
-        for audio_file in [UP_AUDIO_FILE, DOWN_AUDIO_FILE, FALL_AUDIO_FILE]:
-            if not os.path.exists(audio_file):
-                raise FileNotFoundError(f"Audio file '{audio_file}' not found.")
-
         # 初始化音频播放器
         audio_player = AudioPlayer(sample_rate=SAMPLE_RATE, device=device_index)
         audio_player.start()
@@ -282,13 +368,14 @@ def main():
         observer.schedule(event_handler, path=os.path.dirname(os.path.abspath(DATA_FILE)), recursive=False)
         observer.start()
 
-        print("[INFO] Starting HC_SR04 and MPU6050 data monitoring...")
+        print("[INFO] Starting sensor data monitoring...")
 
         # 主线程保持运行
         while True:
             try:
                 time.sleep(1)
             except KeyboardInterrupt:
+                print("[INFO] Keyboard interrupt received. Exiting...")
                 break
 
     except Exception as e:
