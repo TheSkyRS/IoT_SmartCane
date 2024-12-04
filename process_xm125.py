@@ -1,17 +1,22 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-高精度、低延迟的XM125距离检测算法，使用Kalman滤波器、多线程和异步I/O
+XM125 传感器数据的简化处理算法，直接读取最近距离并实时调整声音频率
 """
 
 import json
-import time
-import os
 import numpy as np
-import pygame
 import threading
-import asyncio
-from scipy.stats import norm
+import sounddevice as sd
+from watchdog.observers import Observer
+from watchdog.events import FileSystemEventHandler
+import os
+import time
+import warnings
+from scipy.io.wavfile import WavFileWarning
+
+# 忽略 WavFileWarning 警告
+warnings.filterwarnings("ignore", category=WavFileWarning)
 
 # ============================
 # 配置参数
@@ -19,87 +24,20 @@ from scipy.stats import norm
 
 DATA_FILE = 'sensor_data.jsonl'
 
-# 阈值设置
+# XM125 阈值设置
 OBSTACLE_DISTANCE_THRESHOLD = 0.9  # 米
 OBSTACLE_DISTANCE_MIN = 0.1        # 米
 
-CONFIDENCE_THRESHOLD = 2
-CONFIDENCE_MAX = 3
-
 # 频率映射
 FREQ_MAX = 2000  # Hz
-FREQ_MIN = 500   # Hz
-
-# Kalman滤波器参数
-KALMAN_PROCESS_NOISE = 1e-2  # 过程噪声协方差
-KALMAN_MEASUREMENT_NOISE = 1e-1  # 测量噪声协方差
-KALMAN_ERROR_COVARIANCE = 1.0  # 估计误差协方差初始值
-
-# 物体匹配阈值
-DISTANCE_MATCH_THRESHOLD = 0.15  # 米
+FREQ_MIN = 200   # Hz
 
 # 声音参数
-SAMPLE_RATE = 6000  # 采样率
-CHUNK_SIZE = 150    # 音频块大小
+SAMPLE_RATE = 44100  # 采样率
 
 # ============================
-# 状态变量
+# 辅助函数和类
 # ============================
-
-current_frequency = None
-object_tracks = {}  # 存储活动的物体轨迹
-next_object_id = 1  # 分配给下一个新物体的ID
-
-# 线程锁
-lock = threading.Lock()
-
-# 事件循环
-event_loop = asyncio.new_event_loop()
-
-# ============================
-# 初始化 Pygame mixer
-# ============================
-
-pygame.mixer.init(frequency=SAMPLE_RATE, size=-16, channels=1)
-print("[INFO] Pygame mixer initialized.")
-
-# ============================
-# 辅助函数
-# ============================
-
-class KalmanFilter1D:
-    def __init__(self, process_noise, measurement_noise, error_covariance, initial_state):
-        self.process_noise = process_noise  # Q
-        self.measurement_noise = measurement_noise  # R
-        self.error_covariance = error_covariance  # P
-        self.state_estimate = initial_state  # x
-
-    def update(self, measurement):
-        # 预测阶段
-        self.error_covariance += self.process_noise
-
-        # 更新阶段
-        kalman_gain = self.error_covariance / (self.error_covariance + self.measurement_noise)
-        self.state_estimate += kalman_gain * (measurement - self.state_estimate)
-        self.error_covariance = (1 - kalman_gain) * self.error_covariance
-
-        return self.state_estimate
-
-def generate_tone(frequency, duration):
-    t = np.linspace(0, duration, int(SAMPLE_RATE * duration), False)
-    tone = np.sin(frequency * t * 2 * np.pi)
-    audio = tone * 32767  # 按16位PCM格式
-    audio = audio.astype(np.int16)
-    return audio
-
-async def play_tone_stream(frequency, stop_event):
-    """
-    实时播放指定频率的音调，直到 stop_event 被设置。
-    """
-    stream = pygame.mixer.Sound(buffer=generate_tone(frequency, 0.1)).play(-1)
-    while not stop_event.is_set():
-        await asyncio.sleep(0.01)
-    stream.stop()
 
 def map_distance_to_frequency(distance):
     freq = FREQ_MIN + (OBSTACLE_DISTANCE_THRESHOLD - distance) * \
@@ -107,165 +45,158 @@ def map_distance_to_frequency(distance):
     freq = np.clip(freq, FREQ_MIN, FREQ_MAX)
     return freq
 
-# 在物体匹配过程中，增加置信度处理
-def process_frame(current_peaks):
-    global object_tracks, next_object_id
+class AudioPlayer:
+    def __init__(self, sample_rate=44100, device=None):
+        self.sample_rate = sample_rate
+        self.frequency = 0
+        self.phase = 0
+        self.lock = threading.Lock()
+        self.device = device
+        self.stream = sd.OutputStream(
+            channels=1,
+            callback=self.audio_callback,
+            samplerate=self.sample_rate,
+            device=self.device,
+            blocksize=0,
+            dtype='float32'
+        )
 
-    current_peaks = [{'distance': d, 'strength': s} for d, s in current_peaks]
-    new_object_tracks = {}
-    matched_objects = set()
+    def start(self):
+        self.stream.start()
 
-    for peak in current_peaks:
-        matched = False
-        for obj_id, obj_info in object_tracks.items():
-            distance_diff = abs(obj_info['distance'] - peak['distance'])
-            if distance_diff <= DISTANCE_MATCH_THRESHOLD:
-                # 匹配成功，更新Kalman滤波器
-                estimated_distance = obj_info['kalman_filter'].update(peak['distance'])
-                new_object_tracks[obj_id] = {
-                    'distance': estimated_distance,
-                    'kalman_filter': obj_info['kalman_filter'],
-                    'confidence': min(obj_info['confidence'] + 1, CONFIDENCE_MAX)  # 增加置信度
-                }
-                matched_objects.add(obj_id)
-                matched = True
-                break
-        if not matched:
-            # 新物体，创建Kalman滤波器
-            kf = KalmanFilter1D(
-                process_noise=KALMAN_PROCESS_NOISE,
-                measurement_noise=KALMAN_MEASUREMENT_NOISE,
-                error_covariance=KALMAN_ERROR_COVARIANCE,
-                initial_state=peak['distance']
-            )
-            new_object_tracks[next_object_id] = {
-                'distance': peak['distance'],
-                'kalman_filter': kf,
-                'confidence': 1  # 初始置信度为1
-            }
-            next_object_id += 1
+    def stop(self):
+        self.stream.stop()
+        self.stream.close()
 
-    # 对于未匹配的物体，减少置信度
-    for obj_id, obj_info in object_tracks.items():
-        if obj_id not in matched_objects:
-            obj_info['confidence'] -= 1  # 减少置信度
-            if obj_info['confidence'] > 0:
-                new_object_tracks[obj_id] = obj_info
-            else:
-                print(f"[DEBUG] Object {obj_id} removed due to low confidence.")
+    def set_frequency(self, frequency):
+        with self.lock:
+            self.frequency = frequency
 
-    object_tracks = new_object_tracks
-
-    # 选择置信度足够高的物体
-    valid_objects = {obj_id: obj_info for obj_id, obj_info in object_tracks.items() if obj_info['confidence'] >= CONFIDENCE_THRESHOLD}
-
-    if valid_objects:
-        # 选择最近的物体
-        closest_obj = min(valid_objects.values(), key=lambda x: x['distance'])
-        closest_distance = closest_obj['distance']
-        print(f"[INFO] Estimated distance: {closest_distance:.2f} m (Confidence: {closest_obj['confidence']})")
-
-        if OBSTACLE_DISTANCE_MIN <= closest_distance <= OBSTACLE_DISTANCE_THRESHOLD:
-            freq = map_distance_to_frequency(closest_distance)
-            # 在事件循环中调用异步播放函数
-            asyncio.run_coroutine_threadsafe(update_sound(freq), event_loop)
+    def audio_callback(self, outdata, frames, time_info, status):
+        if status:
+            print(status)
+        t = (np.arange(frames) + self.phase) / self.sample_rate
+        with self.lock:
+            freq = self.frequency
+        self.phase = (self.phase + frames) % self.sample_rate
+        if freq > 0:
+            outdata[:, 0] = np.sin(2 * np.pi * freq * t).astype(np.float32)
         else:
-            # 停止声音
-            asyncio.run_coroutine_threadsafe(stop_sound(), event_loop)
-    else:
-        # 没有置信度足够高的物体，停止声音
-        asyncio.run_coroutine_threadsafe(stop_sound(), event_loop)
+            outdata[:, 0].fill(0)
 
-# 声音控制变量
-current_sound_task = None
-sound_stop_event = threading.Event()
+# ============================
+# 数据处理类
+# ============================
 
-async def update_sound(frequency):
-    global current_frequency, current_sound_task, sound_stop_event
+class XM125DataProcessor:
+    def __init__(self, audio_player):
+        self.audio_player = audio_player
 
-    if current_frequency != frequency:
-        # 如果正在播放声音，先停止
-        if current_sound_task and not current_sound_task.done():
-            sound_stop_event.set()
-            await current_sound_task
-            print("[DEBUG] Stopped previous sound.")
-        # 重置停止事件
-        sound_stop_event.clear()
-        # 启动新的声音任务
-        current_sound_task = asyncio.create_task(play_tone_stream(frequency, sound_stop_event))
-        current_frequency = frequency
-        print(f"[INFO] Playing sound at {frequency:.2f} Hz.")
-    else:
-        print("[DEBUG] Sound frequency unchanged.")
-
-async def stop_sound():
-    global current_sound_task, current_frequency, sound_stop_event
-
-    if current_sound_task and not current_sound_task.done():
-        sound_stop_event.set()
-        await current_sound_task
-        print("[INFO] Sound stopped.")
-    current_sound_task = None
-    current_frequency = None
-
-def process_data_entry(data):
-    sensor_type = data.get('type')
-
-    if sensor_type == 'XM125':
+    def process_xm125_data(self, data):
         distances = data.get('distances_m', [])
         strengths = data.get('strengths_db', [])
         if distances and strengths and len(distances) == len(strengths):
-            current_peaks = list(zip(distances, strengths))
-            process_frame(current_peaks)
+            # 直接获取最近的距离
+            min_distance = min(distances)
+            print(f"[INFO] Nearest distance: {min_distance:.2f} m")
+
+            if OBSTACLE_DISTANCE_MIN <= min_distance <= OBSTACLE_DISTANCE_THRESHOLD:
+                freq = map_distance_to_frequency(min_distance)
+                self.audio_player.set_frequency(freq)
+                print(f"[DEBUG] Playing sound at frequency {freq:.2f} Hz")
+            else:
+                # 停止声音
+                self.audio_player.set_frequency(0)
+                print("[DEBUG] Object out of range. Sound stopped.")
         else:
             # 停止声音
-            asyncio.run_coroutine_threadsafe(stop_sound(), event_loop)
-            print("[INFO] XM125: No valid peaks detected. Stopping sound.")
+            self.audio_player.set_frequency(0)
+            print("[DEBUG] No valid XM125 data detected. Sound stopped.")
 
-async def monitor_data_file():
-    print("[INFO] Monitoring data file: {}".format(DATA_FILE))
+    def process_data_entry(self, data):
+        sensor_type = data.get('type')
 
-    # 异步打开文件
-    loop = asyncio.get_event_loop()
-    with open(DATA_FILE, 'r') as f:
+        if sensor_type == 'XM125':
+            self.process_xm125_data(data)
+
+# ============================
+# 文件事件处理类
+# ============================
+
+class DataFileHandler(FileSystemEventHandler):
+    def __init__(self, data_processor):
+        super().__init__()
+        self.data_processor = data_processor
+        self.file = open(DATA_FILE, 'r')
         # 移动到文件末尾
-        f.seek(0, os.SEEK_END)
+        self.file.seek(0, os.SEEK_END)
 
+    def on_modified(self, event):
+        if event.src_path == os.path.abspath(DATA_FILE):
+            self.process_new_data()
+
+    def process_new_data(self):
         while True:
-            line = f.readline()
+            line = self.file.readline()
             if not line:
-                await asyncio.sleep(0.01)
-                continue
+                break
             try:
                 data = json.loads(line)
-                # 在线程池中处理数据
-                await loop.run_in_executor(None, process_data_entry, data)
+                self.data_processor.process_data_entry(data)
             except json.JSONDecodeError:
-                print(f"[ERROR] Failed to decode JSON: {line.strip()}")
-            except Exception as e:
-                print(f"[ERROR] Error processing data: {e}")
+                continue  # 忽略错误的 JSON 行
+
+# ============================
+# 主函数
+# ============================
 
 def main():
-    global event_loop
+    observer = None
+    audio_player = None
     try:
+        # 获取设备列表并打印
+        devices = sd.query_devices()
+        print("Available audio devices:")
+        for idx, device in enumerate(devices):
+            print(f"{idx}: {device['name']}")
+
+        # 指定音频设备索引（根据您的设备选择）
+        device_index = 0  # 例如，使用索引为 0 的设备
+
+        # 初始化音频播放器
+        audio_player = AudioPlayer(sample_rate=SAMPLE_RATE, device=device_index)
+        audio_player.start()
+
+        # 初始化数据处理器
+        data_processor = XM125DataProcessor(audio_player)
+
+        # 设置文件系统观察者
+        event_handler = DataFileHandler(data_processor)
+        observer = Observer()
+        observer.schedule(event_handler, path=os.path.dirname(os.path.abspath(DATA_FILE)), recursive=False)
+        observer.start()
+
         print("[INFO] Starting XM125 data monitoring...")
 
-        # 在单独的线程中运行事件循环
-        def start_event_loop(loop):
-            asyncio.set_event_loop(loop)
-            loop.run_forever()
+        # 主线程保持运行
+        while True:
+            try:
+                time.sleep(1)
+            except KeyboardInterrupt:
+                break
 
-        threading.Thread(target=start_event_loop, args=(event_loop,), daemon=True).start()
+    except Exception as e:
+        print(f"[ERROR] {e}")
 
-        # 运行数据监控协程
-        asyncio.run(monitor_data_file())
-    except KeyboardInterrupt:
-        print("\n[INFO] Detection stopped by user.")
     finally:
-        # 关闭事件循环
-        event_loop.call_soon_threadsafe(event_loop.stop)
-        pygame.mixer.quit()
-        print("[INFO] Pygame mixer quit. Resources have been released.")
+        # 停止音频播放器
+        if audio_player is not None:
+            audio_player.stop()
+        # 停止文件观察者
+        if observer is not None:
+            observer.stop()
+            observer.join()
+        print("[INFO] Audio player and observer stopped. Resources have been released.")
 
 if __name__ == "__main__":
     main()
