@@ -108,7 +108,7 @@ HC_SR04_INTERVAL = 0.1    # 每0.1秒测量一次
 
 # Measurement Intervals
 MPU6050_INTERVAL = 0.1   # 100 milliseconds
-XM125_INTERVAL = 0.1     # 100 milliseconds
+XM125_INTERVAL = 0.01     # 100 milliseconds
 
 # ============================
 # Enumerations
