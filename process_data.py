@@ -21,6 +21,7 @@ from collections import deque
 import statistics
 import requests
 import queue
+import io
 
 
 # 忽略 WavFileWarning 警告
@@ -43,11 +44,13 @@ HC_SR04_MAX_THRESHOLD = 2 # 米
 # MPU6050 阈值设置
 FALL_ACCEL_THRESHOLD = 2.5           # g，加速度阈值，超过此值认为是摔倒
 FALL_GYRO_THRESHOLD = 300            # °/s，角速度阈值
-FALL_DEBOUNCE_TIME = 2.0             # 秒，防抖时间
-FALL_COOLDOWN_TIME = 5.0             # 秒，提示音冷却时间
+FALL_DEBOUNCE_TIME = 3.0             # 秒，防抖时间
+FALL_COOLDOWN_TIME = 10.0             # 秒，提示音冷却时间
 
-STILL_ACCEL_THRESHOLD = 0.5  # g，示例值
-STILL_GYRO_THRESHOLD = 50.0  # °/s，示例值
+STILL_ACCEL_THRESHOLD = 0.1  # g
+STILL_GYRO_THRESHOLD = 10.0  # °/s
+
+MOVING_COUNT = 5
 
 # XM125 阈值设置
 OBSTACLE_DISTANCE_THRESHOLD = 1.2    # 米
@@ -72,10 +75,11 @@ ALERT_PRIORITIES = {
     DOWN_AUDIO_FILE: 2
 }
 
-CLOUD_SERVER_URL = 'http://34.72.243.54:5000/data'
+CLOUD_SERVER_URL = 'http://34.72.243.54:5000'
 BATCH_SIZE = 10
 BATCH_TIMEOUT = 3
 QUEUE_SIZE = 1000
+NTFY_URL = 'http://ntfy.sh/SmartCane'
 
 # ============================
 # 辅助函数和类
@@ -215,6 +219,17 @@ class SensorDataProcessor:
             FALL_AUDIO_FILE: 0
         }
         self.movement_state = 'unknown'  # 初始运动状态
+
+        # 新增：状态管理
+        self.state = 'normal'  # 可能的状态：'normal', 'fall'
+        self.state_lock = threading.Lock()
+        # 新增：用于跟踪连续的 'moving' 状态检测次数
+        self.moving_state_counter = 0
+        self.required_consecutive_movings = MOVING_COUNT  # 连续检测次数
+
+        # 新增：用于标记音频上传完成的事件
+        self.audio_upload_done = threading.Event()
+        self.audio_upload_done.set()  # 初始为已完成
         
         # 发送队列和线程初始化
         self.send_queue = queue.Queue(maxsize=QUEUE_SIZE)
@@ -222,6 +237,40 @@ class SensorDataProcessor:
         self.batch_timeout = BATCH_TIMEOUT  # 最大等待时间（秒）发送数据，即使未达到 batch_size
         self.sender_thread = threading.Thread(target=self._send_worker, daemon=True)
         self.sender_thread.start()
+    # 新增：发送 ntfy 通知的方法
+    def send_ntfy_notification(self):
+        try:
+            ntfy_url = NTFY_URL
+            message = "Fall Detection!!! Recording audio."
+            response = requests.post(ntfy_url, data=message.encode('utf-8'))
+            response.raise_for_status()
+            print("[INFO] Ntfy Send.")
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Failed to send Ntfy: {e}")
+
+    # 新增：录制音频并上传到云端的方法
+    def record_and_send_audio(self):
+        try:
+            print("[INFO] Recording 10s ......")
+            audio = sd.rec(int(FALL_COOLDOWN_TIME * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype='float32')
+            sd.wait()  # 等待录制完成
+            print("[INFO] Record Done, sending to GCP.")
+            
+            # 将录制的音频保存到内存缓冲区
+            buffer = io.BytesIO()
+            wavfile.write(buffer, SAMPLE_RATE, audio)
+            buffer.seek(0)
+
+            # 上传音频到云端
+            files = {'file': ('fall_audio.wav', buffer, 'audio/wav')}
+            response = requests.post(CLOUD_SERVER_URL+'/audio', files=files, timeout=BATCH_TIMEOUT)
+            response.raise_for_status()
+            print("[INFO] Send audio to GCP.")
+        except Exception as e:
+            print(f"[ERROR] Failed to send audio to GCP: {e}")
+        finally:
+            # 标记音频上传完成
+            self.audio_upload_done.set()
     
     def _send_worker(self):
         """
@@ -256,7 +305,7 @@ class SensorDataProcessor:
         发送数据包到云端服务器。
         """
         try:
-            response = requests.post(CLOUD_SERVER_URL, json=data_pack, timeout=BATCH_TIMEOUT)
+            response = requests.post(CLOUD_SERVER_URL+'/data', json=data_pack, timeout=BATCH_TIMEOUT)
             response.raise_for_status()
             print(f"[INFO] Send {len(data_pack)} datas to GCP.")
         except requests.exceptions.RequestException as e:
@@ -294,6 +343,9 @@ class SensorDataProcessor:
         self.sender_thread.join()
 
     def process_hc_sr04_data(self, data):
+        with self.state_lock:
+            if self.state == 'fall':
+                return
         current_time = time.time()
         distance = data.get('distance_m')
         if distance is None:
@@ -312,7 +364,7 @@ class SensorDataProcessor:
         median_distance = statistics.median(self.hc_sr04_distance_buffer)
         data['distance_m'] = median_distance
         # 打印距离信息
-        print(f"[DEBUG] HC_SR04 median distance: {median_distance:.2f} meters")
+        # print(f"[DEBUG] HC_SR04 median distance: {median_distance:.2f} meters")
         # self.hc_sr04_distance_buffer.clear()
 
         # 防抖处理
@@ -367,10 +419,16 @@ class SensorDataProcessor:
                 return
             # 冷却时间检查
             if current_time - self.last_alert_times[FALL_AUDIO_FILE] >= FALL_COOLDOWN_TIME:
-                # 检测到摔倒，播放提示音
-                self.audio_player.play_alert_sound(FALL_AUDIO_FILE)
-                self.last_alert_times[FALL_AUDIO_FILE] = current_time
-                print("[INFO] Fall detected. Playing 'fall' audio on right channel.")
+                with self.state_lock:
+                    if self.state != 'fall':
+                        self.state = 'fall'
+                        # 检测到摔倒，播放提示音
+                        self.audio_player.play_alert_sound(FALL_AUDIO_FILE)
+                        self.last_alert_times[FALL_AUDIO_FILE] = current_time
+                        self.audio_upload_done.clear()  # 重置事件
+                        print("[INFO] Fall detected.")                    
+                        threading.Thread(target=self.send_ntfy_notification).start()
+                        threading.Thread(target=self.record_and_send_audio).start()
             self.last_fall_event_time = current_time
         
         # 运动状态检测
@@ -379,11 +437,30 @@ class SensorDataProcessor:
         else:
             new_state = 'moving'
 
+
         if new_state != self.movement_state:
             print(f"[INFO] Movement state changed from {self.movement_state} to {new_state}.")
             self.movement_state = new_state
 
+        # 如果当前在 fall 状态，处理状态恢复逻辑
+        with self.state_lock:
+            if self.state == 'fall':
+                if self.audio_upload_done.is_set():  # 仅当音频上传完成时处理恢复逻辑
+                    if new_state == 'moving':
+                        self.moving_state_counter += 1
+                        print(f"[DEBUG] moving counter: {self.moving_state_counter}")
+                        if self.moving_state_counter >= self.required_consecutive_movings:
+                            self.state = 'normal'
+                            self.moving_state_counter = 0
+                            print("[INFO] From fall to normal state.")
+                    else:
+                        self.moving_state_counter = 0
+                        print("[DEBUG] no moving, moving counter clear to 0.")
     def process_xm125_data(self, data):
+        # with self.state_lock:
+        if self.state == 'fall':
+            self.audio_player.frequency = 0 # 停止声音
+            return
         distances = data.get('distances_m', [])
         strengths = data.get('strengths_db', [])
         if distances and strengths and len(distances) == len(strengths):

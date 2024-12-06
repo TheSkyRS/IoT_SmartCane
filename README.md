@@ -10,5 +10,13 @@ RPi:
 
 
 GCP:
-gunicorn -w 4 -b 0.0.0.0:5000 flask_server:app
+gunicorn -w 4 -b 0.0.0.0:5000 app:app
+
+
+Website:
+Sensor:
+http://34.72.243.54:5000
+
+Fall audios:
+http://34.72.243.54:5000/fall_audios
 
