@@ -22,6 +22,36 @@ import statistics
 import requests
 import queue
 import io
+import pyttsx3
+import whisper
+import fastapi_poe as fp
+import asyncio
+
+system_prompt = """
+You are a voice assistant for a smart cane with various functionalities. Interpret the user's commands and respond with a JSON object without any markdown. Use the following format: { "name": "<function_name>", "args": [<arguments>] }.
+
+Sensors:
+- XM125: Pulsed Coherent Radar Sensor to detect obstacle distance.
+- HC_SR04: Ultrasonic Sensor to detect distance.
+- MPU6050: 6-DoF Accel and Gyro Sensor (also called IMU).
+
+Available functions:
+- Set XM125 Threshold: { "name": "set_xm125", "args": [<min_distance>, <max_distance>] }
+- Set HC_SR04 Threshold: { "name": "set_hs_sr04", "args": [<up_threshold>, <down_threshold>] }
+- Display Text: { "name": "display_text", "args": [ "<text>" ] }
+
+Instructions:
+1. Understand the user's request or question.
+2. Attempt to parse it into one of the available functions and return the corresponding JSON format.
+3. If the request does not fit any of the above functions, answer the question based on your own knowledge and use the "display_text" function to provide your response in the following format: { "name": "display_text", "args": [ "Your response text here." ] }.
+
+Ensure all responses are in JSON format and provided as a single-line string without line breaks.
+
+Note:
+- If the user sets only one of the arguments for a function, set the other argument to null. For example, if the user calls "set XM125 Threshold min to 0.2m", then return { "name": "set_xm125", "args": [0.2, null] }.
+"""
+
+
 
 
 # 忽略 WavFileWarning 警告
@@ -40,12 +70,17 @@ HC_SR04_DEBOUNCE_TIME = 1.0          # 秒，防抖时间
 HC_SR04_COOLDOWN_TIME = 3.0          # 秒，提示音冷却时间
 HC_SR04_BUFFER_SIZE = 5
 HC_SR04_MAX_THRESHOLD = 2 # 米
+HC_SR04_MIN_THRESHOLD = 0.05 # 米
 
 # MPU6050 阈值设置
-FALL_ACCEL_THRESHOLD = 2.5           # g，加速度阈值，超过此值认为是摔倒
-FALL_GYRO_THRESHOLD = 300            # °/s，角速度阈值
+FALL_ACCEL_THRESHOLD = 1.5           # g，加速度阈值，超过此值认为是摔倒
+ROTATION_GYRO_THRESHOLD = 300 # 开启语音助手
 FALL_DEBOUNCE_TIME = 3.0             # 秒，防抖时间
 FALL_COOLDOWN_TIME = 10.0             # 秒，提示音冷却时间
+
+POE_API_KEY = '2-j_yibA8pbfozuVugcd8qTYAC-4Iu4XHNEOtuEV5qE'
+
+RECORDING_DURATION = 5 # 语音助手录音
 
 STILL_ACCEL_THRESHOLD = 0.1  # g
 STILL_GYRO_THRESHOLD = 10.0  # °/s
@@ -55,6 +90,7 @@ MOVING_COUNT = 5
 # XM125 阈值设置
 OBSTACLE_DISTANCE_THRESHOLD = 1.2    # 米
 OBSTACLE_DISTANCE_MIN = 0.1          # 米
+XM125_MAX_LIMIT = 3 # Profile 1 Limit
 
 # 频率映射
 FREQ_MAX = 4000  # Hz
@@ -84,15 +120,6 @@ NTFY_URL = 'http://ntfy.sh/SmartCane'
 # ============================
 # 辅助函数和类
 # ============================
-
-def map_distance_to_frequency(distance):
-    """
-    将障碍物距离映射到频率范围内。
-    """
-    freq = FREQ_MIN + (OBSTACLE_DISTANCE_THRESHOLD - distance) * \
-        (FREQ_MAX - FREQ_MIN) / (OBSTACLE_DISTANCE_THRESHOLD - OBSTACLE_DISTANCE_MIN)
-    freq = np.clip(freq, FREQ_MIN, FREQ_MAX)
-    return freq
 
 class AudioPlayer:
     """
@@ -130,6 +157,19 @@ class AudioPlayer:
                 data = data.mean(axis=1)  # 将立体声转换为单声道
             self.preloaded_sounds[sound_file] = data
             print(f"[DEBUG] Loaded '{sound_file}' successfully.")
+
+        # 初始化 TTS 引擎
+        self.tts_engine = pyttsx3.init()
+        self.tts_engine.setProperty('rate', 150)  # 设置语速
+
+    # 新增：将文本转换为语音并播放
+    def speak_text(self, text):
+        """
+        将文本转换为语音并播放。
+        """
+        print(f"[INFO] Speaking text: {text}")
+        self.tts_engine.say(text)
+        self.tts_engine.runAndWait()
 
     def start(self):
         self.stream.start()
@@ -220,8 +260,13 @@ class SensorDataProcessor:
         }
         self.movement_state = 'unknown'  # 初始运动状态
 
+        self.xm125_min = OBSTACLE_DISTANCE_MIN
+        self.xm125_max = OBSTACLE_DISTANCE_THRESHOLD
+        self.hc_sr04_up = UP_STEP_DISTANCE_THRESHOLD
+        self.hc_sr04_down = DOWN_STEP_DISTANCE_THRESHOLD
+
         # 新增：状态管理
-        self.state = 'normal'  # 可能的状态：'normal', 'fall'
+        self.state = 'normal'  # normal fall recording communicating
         self.state_lock = threading.Lock()
         # 新增：用于跟踪连续的 'moving' 状态检测次数
         self.moving_state_counter = 0
@@ -230,6 +275,9 @@ class SensorDataProcessor:
         # 新增：用于标记音频上传完成的事件
         self.audio_upload_done = threading.Event()
         self.audio_upload_done.set()  # 初始为已完成
+
+         # 加载 Whisper 模型
+        self.whisper_model = whisper.load_model("base.en")
         
         # 发送队列和线程初始化
         self.send_queue = queue.Queue(maxsize=QUEUE_SIZE)
@@ -237,11 +285,161 @@ class SensorDataProcessor:
         self.batch_timeout = BATCH_TIMEOUT  # 最大等待时间（秒）发送数据，即使未达到 batch_size
         self.sender_thread = threading.Thread(target=self._send_worker, daemon=True)
         self.sender_thread.start()
+
+    def map_distance_to_frequency(self, distance):
+        """
+        将障碍物距离映射到频率范围内。
+        """
+        freq = FREQ_MIN + (self.xm125_max - distance) * \
+            (FREQ_MAX - FREQ_MIN) / (self.xm125_max - self.xm125_min)
+        freq = np.clip(freq, FREQ_MIN, FREQ_MAX)
+        return freq
+   # 新增：录音并使用 Whisper 进行转文字
+    def start_voice_assistant_recording(self):
+        with self.state_lock:
+            if self.state != 'normal':
+                print("[WARNING] Voice assistant is not in a state to start recording.")
+                return
+            self.state = 'recording'
+            print("[INFO] Starting voice assistant recording.")
+            self.audio_player.speak_text("Smart Assistant.")
+            # 开始录音线程
+            threading.Thread(target=self.record_audio, daemon=True).start()
+
+    def stop_voice_assistant_recording(self):
+        with self.state_lock:
+            if self.state != 'recording':
+                print("[WARNING] Voice assistant is not currently recording.")
+                return
+            self.state = 'communicating'
+            print("[INFO] Stopping voice assistant recording.")
+            self.audio_player.speak_text("Communicating with assistant.")
+            # 停止录音并处理
+            threading.Thread(target=self.process_recorded_audio, daemon=True).start()
+
+    def record_audio(self):
+        """
+        录制用户的语音命令。
+        """
+        try:
+            print("[INFO] Recording audio...")
+            audio = sd.rec(
+                int(RECORDING_DURATION * SAMPLE_RATE),
+                samplerate=SAMPLE_RATE,
+                channels=1,
+                dtype='float32'
+            )
+            sd.wait()  # 等待录制完成
+            wavfile.write('assistant_recording.wav', SAMPLE_RATE, audio)
+            print("[INFO] Recording completed.")
+            # 自动停止录音
+            self.stop_voice_assistant_recording()
+        except Exception as e:
+            print(f"[ERROR] Failed to record audio: {e}")
+            with self.state_lock:
+                self.state = 'normal'
+
+
+    def process_recorded_audio(self):
+        """
+        使用 Whisper 将录制的音频转为文字，并与 NLP 模型交互。
+        """
+        try:
+            print("[INFO] Transcribing audio with Whisper...")
+            result = self.whisper_model.transcribe("assistant_recording.wav")
+            text = result['text'].strip()
+            print(f"[INFO] Transcribed Text: {text}")
+            if text:
+                self.send_text_to_nlp(text)
+            else:
+                print("[ERROR] No speech detected in the recording.")
+                with self.state_lock:
+                    self.state = 'normal'
+        except Exception as e:
+            print(f"[ERROR] Failed to transcribe audio: {e}")
+            with self.state_lock:
+                self.state = 'normal'
+        finally:
+            # 清理录音文件
+            if os.path.exists("assistant_recording.wav"):
+                os.remove("assistant_recording.wav")
+
+    async def get_llm_response(self, prompt):
+        combined_prompt = f"{system_prompt}\nUser request: {prompt}"
+        message = fp.ProtocolMessage(role="user", content=combined_prompt)
+        full_response = ""
+
+        async for partial in fp.get_bot_response(
+            messages=[message],
+            bot_name='GPT-4o-Mini',
+            api_key=POE_API_KEY
+        ):
+            full_response += partial.text
+
+        return full_response
+
+    def send_text_to_nlp(self, text):
+        """
+        发送转录的文字到 NLP 模型并处理响应。
+        """
+        try:
+            print("[INFO] Sending text to NLP model...")
+            full_response = asyncio.run(self.get_llm_response(text))
+            print(f"[INFO] NLP Response: {full_response}")
+            # 处理 NLP 响应
+            self.handle_nlp_response(full_response)
+        except Exception as e:
+            print(f"[ERROR] Failed to get LLM response: {e}")
+            with self.state_lock:
+                self.state = 'normal'
+
+    def handle_nlp_response(self, response):
+        """
+        根据 NLP 模型的响应执行相应的功能，并将 display_text 转为音频输出。
+        """
+        try:
+            parsed_response = json.loads(response)
+            print(f"[INFO] Parsed NLP Response: {parsed_response}")
+            # 根据响应执行相应的功能
+            if 'name' in parsed_response and 'args' in parsed_response:
+                function_name = parsed_response['name']
+                args = parsed_response['args']
+                
+                if function_name == 'display_text':
+                    text_to_display = args[0]
+                    print(f"[DISPLAY] {text_to_display}")
+                    # 将 display_text 转为音频输出
+                    self.audio_player.speak_text(text_to_display)
+                
+                elif function_name == 'set_xm125':
+                    self.xm125_min = args[0] if args[0] is not None and OBSTACLE_DISTANCE_MIN <= args[0] <= XM125_MAX_LIMIT else self.xm125_min
+                    self.xm125_max = args[1] if args[1] is not None and OBSTACLE_DISTANCE_MIN <= args[1] <= XM125_MAX_LIMIT else self.xm125_max
+                    print(f"[INFO] XM125 Threshold set to min: {self.xm125_min}m, max: {self.xm125_max}m.")
+                
+                elif function_name == 'set_hs_sr04':
+                    self.hc_sr04_up = args[0] if args[0] is not None and HC_SR04_MIN_THRESHOLD <= args[0] <= HC_SR04_MAX_THRESHOLD else self.hc_sr04_up
+                    self.hc_sr04_down = args[1] if args[1] is not None and HC_SR04_MIN_THRESHOLD <= args[1] <= HC_SR04_MAX_THRESHOLD else self.hc_sr04_down
+                    print(f"[INFO] HC_SR04 Threshold set to up: {self.hc_sr04_up}m, down: {self.hc_sr04_down}m.")
+                
+                else:
+                    print(f"[ERROR] Unknown function: {function_name}")
+            else:
+                print("[ERROR] Invalid response structure.")
+        
+        except (json.JSONDecodeError, KeyError) as e:
+            print(f"[ERROR] Invalid NLP response format: {e}")
+        
+        finally:
+            # 将状态切换回 'normal'
+            with self.state_lock:
+                self.state = 'normal'
+                print("[INFO] State changed to 'normal'.")
+   
     # 新增：发送 ntfy 通知的方法
     def send_ntfy_notification(self):
         try:
             ntfy_url = NTFY_URL
-            message = "Fall Detection!!! Recording audio."
+            message = "Fall Detection!!! Recording audio.\nGo to webstie: http://34.72.243.54:5000/fall_audios"
             response = requests.post(ntfy_url, data=message.encode('utf-8'))
             response.raise_for_status()
             print("[INFO] Ntfy Send.")
@@ -252,7 +450,12 @@ class SensorDataProcessor:
     def record_and_send_audio(self):
         try:
             print("[INFO] Recording 10s ......")
-            audio = sd.rec(int(FALL_COOLDOWN_TIME * SAMPLE_RATE), samplerate=SAMPLE_RATE, channels=1, dtype='float32')
+            audio = sd.rec(
+            int(FALL_COOLDOWN_TIME * SAMPLE_RATE),
+            samplerate=SAMPLE_RATE,
+            channels=1,
+            dtype='float32'
+            )
             sd.wait()  # 等待录制完成
             print("[INFO] Record Done, sending to GCP.")
             
@@ -344,7 +547,7 @@ class SensorDataProcessor:
 
     def process_hc_sr04_data(self, data):
         with self.state_lock:
-            if self.state == 'fall':
+            if self.state == 'fall' or self.state == 'recording':
                 return
         current_time = time.time()
         distance = data.get('distance_m')
@@ -373,9 +576,9 @@ class SensorDataProcessor:
             return
 
         # 确定当前状态
-        if median_distance < UP_STEP_DISTANCE_THRESHOLD:
+        if median_distance <= self.hc_sr04_up:
             current_state = 'up'
-        elif median_distance > DOWN_STEP_DISTANCE_THRESHOLD and median_distance < HC_SR04_MAX_THRESHOLD:
+        elif self.hc_sr04_down < median_distance <= HC_SR04_MAX_THRESHOLD:
             current_state = 'down'
         else:
             current_state = 'normal'
@@ -412,7 +615,10 @@ class SensorDataProcessor:
         # print(f"[DEBUG] MPU6050 Acc Total Change: {acc_total_change:.2f} g")
         # print(f"[DEBUG] MPU6050 Gyro Total Change: {gyro_total_change:.2f} °/s")
 
-        if acc_total_change >= FALL_ACCEL_THRESHOLD or gyro_total_change >= FALL_GYRO_THRESHOLD:
+        if gyro_total_change >= ROTATION_GYRO_THRESHOLD:
+            self.start_voice_assistant_recording()
+
+        if acc_total_change >= FALL_ACCEL_THRESHOLD:
             # 防抖处理
             if current_time - self.last_fall_event_time < FALL_DEBOUNCE_TIME:
                 # print("[DEBUG] MPU6050 fall event ignored due to debounce.")
@@ -420,7 +626,7 @@ class SensorDataProcessor:
             # 冷却时间检查
             if current_time - self.last_alert_times[FALL_AUDIO_FILE] >= FALL_COOLDOWN_TIME:
                 with self.state_lock:
-                    if self.state != 'fall':
+                    if self.state == 'normal':
                         self.state = 'fall'
                         # 检测到摔倒，播放提示音
                         self.audio_player.play_alert_sound(FALL_AUDIO_FILE)
@@ -458,7 +664,7 @@ class SensorDataProcessor:
                         print("[DEBUG] no moving, moving counter clear to 0.")
     def process_xm125_data(self, data):
         # with self.state_lock:
-        if self.state == 'fall':
+        if self.state == 'fall' or self.state == 'recording':
             self.audio_player.frequency = 0 # 停止声音
             return
         distances = data.get('distances_m', [])
@@ -468,8 +674,8 @@ class SensorDataProcessor:
             min_distance = distances[0]
             # print(f"[INFO] Nearest distance (XM125): {min_distance:.2f} m")
 
-            if OBSTACLE_DISTANCE_MIN <= min_distance <= OBSTACLE_DISTANCE_THRESHOLD:
-                freq = map_distance_to_frequency(min_distance)
+            if self.xm125_min <= min_distance <= self.xm125_max:
+                freq = self.map_distance_to_frequency(min_distance)
                 self.audio_player.frequency = freq  # 设置左声道频率
                 # print(f"[DEBUG] Playing frequency sound at {freq:.2f} Hz on left channel.")
             else:
