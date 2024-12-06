@@ -17,6 +17,11 @@ from scipy.io import wavfile
 from scipy.io.wavfile import WavFileWarning
 import queue
 import numpy as np
+from collections import deque
+import statistics
+import requests
+import queue
+
 
 # 忽略 WavFileWarning 警告
 warnings.filterwarnings("ignore", category=WavFileWarning)
@@ -28,10 +33,12 @@ warnings.filterwarnings("ignore", category=WavFileWarning)
 DATA_FILE = 'sensor_data.jsonl'
 
 # HC_SR04 阈值设置
-UP_STEP_DISTANCE_THRESHOLD = 0.3     # 米，小于此距离认为是上台阶
+UP_STEP_DISTANCE_THRESHOLD = 0.2     # 米，小于此距离认为是上台阶
 DOWN_STEP_DISTANCE_THRESHOLD = 0.5   # 米，大于此距离认为是下台阶
 HC_SR04_DEBOUNCE_TIME = 1.0          # 秒，防抖时间
 HC_SR04_COOLDOWN_TIME = 3.0          # 秒，提示音冷却时间
+HC_SR04_BUFFER_SIZE = 5
+HC_SR04_MAX_THRESHOLD = 2 # 米
 
 # MPU6050 阈值设置
 FALL_ACCEL_THRESHOLD = 2.5           # g，加速度阈值，超过此值认为是摔倒
@@ -39,12 +46,15 @@ FALL_GYRO_THRESHOLD = 300            # °/s，角速度阈值
 FALL_DEBOUNCE_TIME = 2.0             # 秒，防抖时间
 FALL_COOLDOWN_TIME = 5.0             # 秒，提示音冷却时间
 
+STILL_ACCEL_THRESHOLD = 0.5  # g，示例值
+STILL_GYRO_THRESHOLD = 50.0  # °/s，示例值
+
 # XM125 阈值设置
-OBSTACLE_DISTANCE_THRESHOLD = 0.9    # 米
+OBSTACLE_DISTANCE_THRESHOLD = 1.2    # 米
 OBSTACLE_DISTANCE_MIN = 0.1          # 米
 
 # 频率映射
-FREQ_MAX = 2000  # Hz
+FREQ_MAX = 4000  # Hz
 FREQ_MIN = 200   # Hz
 
 # 声音参数
@@ -61,6 +71,11 @@ ALERT_PRIORITIES = {
     UP_AUDIO_FILE: 2,
     DOWN_AUDIO_FILE: 2
 }
+
+CLOUD_SERVER_URL = 'http://34.72.243.54:5000/data'
+BATCH_SIZE = 10
+BATCH_TIMEOUT = 3
+QUEUE_SIZE = 1000
 
 # ============================
 # 辅助函数和类
@@ -130,7 +145,7 @@ class AudioPlayer:
             if sound_file not in self.alerts_in_queue:
                 self.alert_queue.put((priority, sound_file))
                 self.alerts_in_queue.add(sound_file)
-                print(f"[DEBUG] Added '{sound_file}' to alert queue with priority {priority}.")
+                # print(f"[DEBUG] Added '{sound_file}' to alert queue with priority {priority}.")
 
     def audio_callback(self, outdata, frames, time_info, status):
         """
@@ -147,7 +162,7 @@ class AudioPlayer:
                 self.current_alert_sound = self.preloaded_sounds.get(sound_file)
                 self.alert_sound_position = 0
                 self.alerts_in_queue.discard(sound_file)
-                print(f"[DEBUG] Now playing '{sound_file}' on right channel.")
+                # print(f"[DEBUG] Now playing '{sound_file}' on right channel.")
 
         # 左声道：频率声音
         with self.lock:
@@ -156,7 +171,7 @@ class AudioPlayer:
         if freq > 0:
             t = (np.arange(frames) + self.phase) / self.sample_rate
             left_channel = np.sin(2 * np.pi * freq * t).astype(np.float32)
-            print(f"[DEBUG] Playing frequency sound at {freq:.2f} Hz on left channel.")
+            # print(f"[DEBUG] Playing frequency sound at {freq:.2f} Hz on left channel.")
         else:
             left_channel = np.zeros(frames, dtype=np.float32)
 
@@ -171,7 +186,7 @@ class AudioPlayer:
             if len(chunk) < frames:
                 # 警告音播放完毕，填充剩余部分
                 right_channel = np.concatenate((chunk, np.zeros(frames - len(chunk), dtype=np.float32)))
-                print(f"[DEBUG] Finished playing alert sound on right channel.")
+                # print(f"[DEBUG] Finished playing alert sound on right channel.")
                 self.current_alert_sound = None
             else:
                 right_channel = chunk
@@ -191,6 +206,7 @@ class SensorDataProcessor:
     def __init__(self, audio_player):
         self.audio_player = audio_player
         self.last_hc_sr04_event_time = 0
+        self.hc_sr04_distance_buffer = deque(maxlen=HC_SR04_BUFFER_SIZE)
         self.last_fall_event_time = 0
         self.last_hc_sr04_state = 'unknown'  # 初始状态为未知
         self.last_alert_times = {
@@ -198,6 +214,84 @@ class SensorDataProcessor:
             DOWN_AUDIO_FILE: 0,
             FALL_AUDIO_FILE: 0
         }
+        self.movement_state = 'unknown'  # 初始运动状态
+        
+        # 发送队列和线程初始化
+        self.send_queue = queue.Queue(maxsize=QUEUE_SIZE)
+        self.batch_size = BATCH_SIZE  # 每批发送的数据量
+        self.batch_timeout = BATCH_TIMEOUT  # 最大等待时间（秒）发送数据，即使未达到 batch_size
+        self.sender_thread = threading.Thread(target=self._send_worker, daemon=True)
+        self.sender_thread.start()
+    
+    def _send_worker(self):
+        """
+        发送工作线程，从队列中取出数据并批量发送到云端服务器。
+        """
+        data_pack = []
+        last_send_time = time.time()
+        while True:
+            try:
+                # 等待数据，超时后继续检查是否有需要发送的数据
+                data = self.send_queue.get(timeout=self.batch_timeout)
+                if data is None:
+                    # 接收到退出信号
+                    if data_pack:
+                        self._send_data_pack(data_pack)
+                    break
+                data_pack.append(data)
+                if len(data_pack) >= self.batch_size:
+                    self._send_data_pack(data_pack)
+                    data_pack = []
+                    last_send_time = time.time()
+            except queue.Empty:
+                # 超时检查是否有数据需要发送
+                current_time = time.time()
+                if data_pack and (current_time - last_send_time) >= self.batch_timeout:
+                    self._send_data_pack(data_pack)
+                    data_pack = []
+                    last_send_time = current_time
+
+    def _send_data_pack(self, data_pack):
+        """
+        发送数据包到云端服务器。
+        """
+        try:
+            response = requests.post(CLOUD_SERVER_URL, json=data_pack, timeout=BATCH_TIMEOUT)
+            response.raise_for_status()
+            print(f"[INFO] Send {len(data_pack)} datas to GCP.")
+        except requests.exceptions.RequestException as e:
+            print(f"[ERROR] Failed to send data_pack to GCP: {e}")
+
+    def send_data_to_cloud(self, data):
+        """
+        将传感器数据放入发送队列中。
+        """
+        try:
+            self.send_queue.put_nowait(data)
+        except queue.Full:
+            print("[WARNING] Queue is Full.")
+
+    def process_data_entry(self, data):
+        sensor_type = data.get('type')
+
+        if sensor_type == 'HC_SR04':
+            self.process_hc_sr04_data(data)
+        elif sensor_type == 'MPU6050':
+            self.process_mpu6050_data(data)
+        elif sensor_type == 'XM125':
+            self.process_xm125_data(data)
+        else:
+            print(f"[DEBUG] Unknown sensor type: {sensor_type}")
+
+        # 将数据发送到云端
+        self.send_data_to_cloud(data)
+
+    def shutdown(self):
+        """
+        关闭发送线程，确保所有数据都被发送。
+        """
+        self.send_queue.put(None)  # 发送退出信号
+        self.sender_thread.join()
 
     def process_hc_sr04_data(self, data):
         current_time = time.time()
@@ -206,18 +300,30 @@ class SensorDataProcessor:
             print("[DEBUG] HC_SR04 data missing 'distance_m'.")
             return
 
+        # 运动状态不处理超声波
+        if self.movement_state != 'still':
+            print("[DEBUG] Skipping HC_SR04 processing because device is moving.")
+            return
+        
+        self.hc_sr04_distance_buffer.append(distance)
+        if len(self.hc_sr04_distance_buffer) < self.hc_sr04_distance_buffer.maxlen:
+            return
+        
+        median_distance = statistics.median(self.hc_sr04_distance_buffer)
+        data['distance_m'] = median_distance
         # 打印距离信息
-        print(f"[DEBUG] HC_SR04 distance: {distance:.2f} meters")
+        print(f"[DEBUG] HC_SR04 median distance: {median_distance:.2f} meters")
+        # self.hc_sr04_distance_buffer.clear()
 
         # 防抖处理
         if current_time - self.last_hc_sr04_event_time < HC_SR04_DEBOUNCE_TIME:
-            print("[DEBUG] HC_SR04 event ignored due to debounce.")
+            # print("[DEBUG] HC_SR04 event ignored due to debounce.")
             return
 
         # 确定当前状态
-        if distance < UP_STEP_DISTANCE_THRESHOLD:
+        if median_distance < UP_STEP_DISTANCE_THRESHOLD:
             current_state = 'up'
-        elif distance > DOWN_STEP_DISTANCE_THRESHOLD:
+        elif median_distance > DOWN_STEP_DISTANCE_THRESHOLD and median_distance < HC_SR04_MAX_THRESHOLD:
             current_state = 'down'
         else:
             current_state = 'normal'
@@ -251,13 +357,13 @@ class SensorDataProcessor:
         gyro_total_change = gyro_change.get('Total Change', 0)
 
         # 打印加速度和角速度变化信息
-        print(f"[DEBUG] MPU6050 Acc Total Change: {acc_total_change:.2f} g")
-        print(f"[DEBUG] MPU6050 Gyro Total Change: {gyro_total_change:.2f} °/s")
+        # print(f"[DEBUG] MPU6050 Acc Total Change: {acc_total_change:.2f} g")
+        # print(f"[DEBUG] MPU6050 Gyro Total Change: {gyro_total_change:.2f} °/s")
 
         if acc_total_change >= FALL_ACCEL_THRESHOLD or gyro_total_change >= FALL_GYRO_THRESHOLD:
             # 防抖处理
             if current_time - self.last_fall_event_time < FALL_DEBOUNCE_TIME:
-                print("[DEBUG] MPU6050 fall event ignored due to debounce.")
+                # print("[DEBUG] MPU6050 fall event ignored due to debounce.")
                 return
             # 冷却时间检查
             if current_time - self.last_alert_times[FALL_AUDIO_FILE] >= FALL_COOLDOWN_TIME:
@@ -266,6 +372,16 @@ class SensorDataProcessor:
                 self.last_alert_times[FALL_AUDIO_FILE] = current_time
                 print("[INFO] Fall detected. Playing 'fall' audio on right channel.")
             self.last_fall_event_time = current_time
+        
+        # 运动状态检测
+        if acc_total_change < STILL_ACCEL_THRESHOLD and gyro_total_change < STILL_GYRO_THRESHOLD:
+            new_state = 'still'
+        else:
+            new_state = 'moving'
+
+        if new_state != self.movement_state:
+            print(f"[INFO] Movement state changed from {self.movement_state} to {new_state}.")
+            self.movement_state = new_state
 
     def process_xm125_data(self, data):
         distances = data.get('distances_m', [])
@@ -273,32 +389,21 @@ class SensorDataProcessor:
         if distances and strengths and len(distances) == len(strengths):
             # 直接获取最近的距离
             min_distance = distances[0]
-            print(f"[INFO] Nearest distance (XM125): {min_distance:.2f} m")
+            # print(f"[INFO] Nearest distance (XM125): {min_distance:.2f} m")
 
             if OBSTACLE_DISTANCE_MIN <= min_distance <= OBSTACLE_DISTANCE_THRESHOLD:
                 freq = map_distance_to_frequency(min_distance)
                 self.audio_player.frequency = freq  # 设置左声道频率
-                print(f"[DEBUG] Playing frequency sound at {freq:.2f} Hz on left channel.")
+                # print(f"[DEBUG] Playing frequency sound at {freq:.2f} Hz on left channel.")
             else:
                 # 停止声音
                 self.audio_player.frequency = 0
-                print("[DEBUG] Obstacle out of range (XM125). Frequency sound stopped on left channel.")
+                # print("[DEBUG] Obstacle out of range (XM125). Frequency sound stopped on left channel.")
         else:
             # 停止声音
             self.audio_player.frequency = 0
-            print("[DEBUG] No valid XM125 data detected. Frequency sound stopped on left channel.")
+            # print("[DEBUG] No valid XM125 data detected. Frequency sound stopped on left channel.")
 
-    def process_data_entry(self, data):
-        sensor_type = data.get('type')
-
-        if sensor_type == 'HC_SR04':
-            self.process_hc_sr04_data(data)
-        elif sensor_type == 'MPU6050':
-            self.process_mpu6050_data(data)
-        elif sensor_type == 'XM125':
-            self.process_xm125_data(data)
-        else:
-            print(f"[DEBUG] Unknown sensor type: {sensor_type}")
 
 # ============================
 # 文件事件处理类
@@ -345,6 +450,7 @@ class DataFileHandler(FileSystemEventHandler):
 def main():
     observer = None
     audio_player = None
+    data_processor = None
     try:
         # 获取设备列表并打印
         devices = sd.query_devices()
@@ -389,7 +495,9 @@ def main():
         if observer is not None:
             observer.stop()
             observer.join()
-        print("[INFO] Audio player and observer stopped. Resources have been released.")
-
+       # 关闭发送线程
+        if data_processor is not None:
+            data_processor.shutdown()
+        print("[INFO] Audio player, observer, and data sender stopped. Resources have been released.")
 if __name__ == "__main__":
     main()
