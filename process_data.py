@@ -64,7 +64,7 @@ warnings.filterwarnings("ignore", category=WavFileWarning)
 DATA_FILE = 'sensor_data.jsonl'
 
 # HC_SR04 阈值设置
-UP_STEP_DISTANCE_THRESHOLD = 0.2     # 米，小于此距离认为是上台阶
+UP_STEP_DISTANCE_THRESHOLD = 0.15     # 米，小于此距离认为是上台阶
 DOWN_STEP_DISTANCE_THRESHOLD = 0.5   # 米，大于此距离认为是下台阶
 HC_SR04_DEBOUNCE_TIME = 1.0          # 秒，防抖时间
 HC_SR04_COOLDOWN_TIME = 3.0          # 秒，提示音冷却时间
@@ -364,6 +364,8 @@ class SensorDataProcessor:
         录制用户的语音命令。
         """
         try:
+            # 防止录音到“Smart Assistant.”
+            time.sleep(1)
             print("[INFO] Recording audio...")
             audio = sd.rec(
                 int(RECORDING_DURATION * SAMPLE_RATE),
@@ -456,11 +458,13 @@ class SensorDataProcessor:
                 elif function_name == 'set_xm125':
                     self.xm125_min = args[0] if args[0] is not None and OBSTACLE_DISTANCE_MIN <= args[0] <= XM125_MAX_LIMIT else self.xm125_min
                     self.xm125_max = args[1] if args[1] is not None and OBSTACLE_DISTANCE_MIN <= args[1] <= XM125_MAX_LIMIT else self.xm125_max
+                    self.audio_player.speak_text(f'Radar Threshold set min {self.xm125_min} meter max {self.xm125_max} meter')
                     print(f"[INFO] XM125 Threshold set to min: {self.xm125_min}m, max: {self.xm125_max}m.")
                 
                 elif function_name == 'set_hs_sr04':
                     self.hc_sr04_up = args[0] if args[0] is not None and HC_SR04_MIN_THRESHOLD <= args[0] <= HC_SR04_MAX_THRESHOLD else self.hc_sr04_up
                     self.hc_sr04_down = args[1] if args[1] is not None and HC_SR04_MIN_THRESHOLD <= args[1] <= HC_SR04_MAX_THRESHOLD else self.hc_sr04_down
+                    self.audio_player.speak_text(f'Ultrasonic Threshold set up {self.hc_sr04_up} meter down {self.hc_sr04_down} meter')
                     print(f"[INFO] HC_SR04 Threshold set to up: {self.hc_sr04_up}m, down: {self.hc_sr04_down}m.")
                 
                 else:
@@ -658,9 +662,19 @@ class SensorDataProcessor:
         # print(f"[DEBUG] MPU6050 Gyro Total Change: {gyro_total_change:.2f} °/s")
 
         if gyro_total_change >= ROTATION_GYRO_THRESHOLD:
+            # 防止多次触发，我们希望的是得到回应后，等语音讲完才能触发下次功能.
+            with self.audio_player.mute_lock:
+                if self.audio_player.muted:
+                    return
+            
             self.start_voice_assistant_recording()
 
         if acc_total_change >= FALL_ACCEL_THRESHOLD:
+            # 防止SmartAssistant讲话时触发Fall.
+            with self.audio_player.mute_lock:
+                if self.audio_player.muted:
+                    return
+            
             # 防抖处理
             if current_time - self.last_fall_event_time < FALL_DEBOUNCE_TIME:
                 # print("[DEBUG] MPU6050 fall event ignored due to debounce.")
