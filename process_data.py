@@ -146,6 +146,13 @@ class AudioPlayer:
         self.alert_sound_position = 0
         self.alerts_in_queue = set()    # 记录已在队列中的警告音
 
+        # 新增：静音控制
+        self.muted = False
+        self.mute_lock = threading.Lock()
+        # 初始化 TTS 引擎
+        self.tts_engine = pyttsx3.init()
+        self.tts_engine.setProperty('rate', 150)  # 设置语速
+
         # 预加载警告音频
         for sound_file in [UP_AUDIO_FILE, DOWN_AUDIO_FILE, FALL_AUDIO_FILE]:
             if not os.path.exists(sound_file):
@@ -158,18 +165,47 @@ class AudioPlayer:
             self.preloaded_sounds[sound_file] = data
             print(f"[DEBUG] Loaded '{sound_file}' successfully.")
 
-        # 初始化 TTS 引擎
-        self.tts_engine = pyttsx3.init()
-        self.tts_engine.setProperty('rate', 150)  # 设置语速
+    def estimate_tts_duration(self, text):
+        """
+        根据文本长度估算 TTS 播放所需时间（秒）。
+        """
+        words = len(text.split())
+        words_per_minute = self.tts_engine.getProperty('rate')  # 获取语速
+        words_per_minute = max(words_per_minute, 1)  # 防止除零错误
+    
+        duration_seconds = (words / words_per_minute) * 60
+        return duration_seconds
 
-    # 新增：将文本转换为语音并播放
     def speak_text(self, text):
         """
-        将文本转换为语音并播放。
+        将文本转换为语音并播放。在播放期间暂停所有音频输出，播放结束后恢复。
         """
         print(f"[INFO] Speaking text: {text}")
-        self.tts_engine.say(text)
-        self.tts_engine.runAndWait()
+
+        # 计算预计播放时间
+        duration = self.estimate_tts_duration(text)
+        print(f"[DEBUG] Estimated TTS duration: {duration:.2f} seconds")
+
+        # 设置静音
+        with self.mute_lock:
+            self.muted = True
+
+        # 开始 TTS 播放
+        def tts_thread():
+            self.tts_engine.say(text)
+            self.tts_engine.runAndWait()
+
+        tts = threading.Thread(target=tts_thread, daemon=True)
+        tts.start()
+
+        # 设置定时器在预计播放时间后取消静音
+        def unmute():
+            with self.mute_lock:
+                self.muted = False
+            print("[DEBUG] Audio unmuted after TTS.")
+
+        timer = threading.Timer(duration, unmute)
+        timer.start()
 
     def start(self):
         self.stream.start()
@@ -197,6 +233,12 @@ class AudioPlayer:
         """
         if status:
             print(f"[WARNING] {status}")
+
+        # 检查是否静音
+        with self.mute_lock:
+            if self.muted:
+                outdata.fill(0)
+                return
 
         # 处理右声道的警告音
         with self.alert_lock:
