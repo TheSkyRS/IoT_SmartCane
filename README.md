@@ -2,6 +2,8 @@
 
 This project is an intelligent cane designed to help visually impaired individuals navigate the world with confidence. The cane integrates a Raspberry Pi, microphone, speaker, and three sensors: the HCSR04 ultrasonic distance sensor, XM125 Pulse Coherent Radar millimeter-wave sensor (for obstacle distance measurement), and MPU6050 6-DoF Accelerometer and Gyro (also called IMU).
 
+![StateTransfer](./state.png "StateTransfer")
+
 ### Features and Functions:
 
 #### 1. **HCSR04 Ultrasonic Sensor**:
