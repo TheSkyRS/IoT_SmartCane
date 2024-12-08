@@ -4,6 +4,8 @@
     <meta charset="UTF-8">
     <title>Real-Time Sensor Data Dashboard</title>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/luxon@3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-luxon"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -43,375 +45,371 @@
 </head>
 <body>
 
-    <h2>Real-Time Sensor Data Dashboard</h2>
+<h2>Real-Time Sensor Data Dashboard</h2>
 
-    <div class="charts-container">
-        <div class="chart-container">
-            <h3>XM125 Scatter Plot</h3>
-            <canvas id="xm125Chart"></canvas>
-        </div>
-
-        <div class="chart-container">
-            <h3>HC_SR04 Distance Over Time</h3>
-            <canvas id="hcsr04Chart"></canvas>
-        </div>
-
-        <div class="chart-container">
-            <h3>IMU Accelerometer Changes Over Time</h3>
-            <canvas id="imuAccChart"></canvas>
-        </div>
-
-        <div class="chart-container">
-            <h3>IMU Gyroscope Changes Over Time</h3>
-            <canvas id="imuGyroChart"></canvas>
-        </div>
+<div class="charts-container">
+    <div class="chart-container">
+        <h3>XM125 Scatter Plot</h3>
+        <canvas id="xm125Chart"></canvas>
     </div>
 
-    <script>
-        // 最大数据点数量
-        const maxDataPoints = 100;
+    <div class="chart-container">
+        <h3>HC_SR04 Distance Over Time</h3>
+        <canvas id="hcsr04Chart"></canvas>
+    </div>
 
-        // XM125 Scatter Chart
-        const ctxXm125 = document.getElementById('xm125Chart').getContext('2d');
-        const xm125Chart = new Chart(ctxXm125, {
-            type: 'scatter',
-            data: {
-                datasets: [{
-                    label: 'XM125 < 1.2m',
-                    data: [],
-                    backgroundColor: 'rgba(75, 192, 192, 1)'
-                }]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    x: {
-                        type: 'linear',
-                        title: {
-                            display: true,
-                            text: 'Timestamp'
-                        },
-                        ticks: {
-                            callback: function(value) {
-                                return new Date(value * 1000).toLocaleTimeString();
-                            }
+    <div class="chart-container">
+        <h3>IMU Accelerometer Changes Over Time</h3>
+        <canvas id="imuAccChart"></canvas>
+    </div>
+
+    <div class="chart-container">
+        <h3>IMU Gyroscope Changes Over Time</h3>
+        <canvas id="imuGyroChart"></canvas>
+    </div>
+</div>
+
+<script>
+    // 最大数据点数量
+    const maxDataPoints = 100;
+
+    // XM125 Scatter Chart
+    const ctxXm125 = document.getElementById('xm125Chart').getContext('2d');
+    const xm125Chart = new Chart(ctxXm125, {
+        type: 'scatter',
+        data: {
+            datasets: [{
+                label: 'XM125 < 1.2m',
+                data: [],
+                backgroundColor: 'rgba(75, 192, 192, 1)'
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        unit: 'second',
+                        displayFormats: {
+                            second: 'h:mm:ss a'
                         }
                     },
-                    y: {
-                        title: {
-                            display: true,
-                            text: 'Distance (m)'
-                        },
-                        min: 0,
-                        max: 1.2
+                    title: {
+                        display: true,
+                        text: 'Timestamp'
                     }
                 },
-                plugins: {
-                    legend: {
-                        display: false
+                y: {
+                    title: {
+                        display: true,
+                        text: 'Distance (m)'
                     },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                const date = new Date(context.parsed.x * 1000);
-                                return `Timestamp: ${date.toLocaleTimeString()}, Distance: ${context.parsed.y}m`;
-                            }
-                        }
-                    }
-                },
-                animation: {
-                    duration: 0
+                    min: 0,
+                    max: 1.2
                 }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const date = new Date(context.parsed.x);
+                            return `Timestamp: ${date.toLocaleTimeString()}, Distance: ${context.parsed.y}m`;
+                        }
+                    }
+                }
+            },
+            animation: {
+                duration: 0
+            }
+        }
+    });
+
+    // HC_SR04 Line Chart
+    const ctxHcsr04 = document.getElementById('hcsr04Chart').getContext('2d');
+    const hcsr04Chart = new Chart(ctxHcsr04, {
+        type: 'line',
+        data: {
+            datasets: [{
+                label: 'Distance (m)',
+                data: [],
+                borderColor: 'rgba(255, 99, 132, 1)',
+                backgroundColor: 'rgba(255, 99, 132, 0.2)',
+                fill: false,
+                tension: 0.1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        unit: 'second',
+                        displayFormats: {
+                            second: 'h:mm:ss a'
+                        }
+                    },
+                    title: {
+                        display: true,
+                        text: 'Timestamp'
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: 'Distance (m)'
+                    },
+                    min: 0,
+                    max: 1
+                }
+            },
+            plugins: {
+                legend: {
+                    display: false
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const date = new Date(context.parsed.x);
+                            return `Timestamp: ${date.toLocaleTimeString()}, Distance: ${context.parsed.y}m`;
+                        }
+                    }
+                }
+            },
+            animation: {
+                duration: 0
+            }
+        }
+    });
+
+    // IMU Accelerometer Line Chart
+    const ctxImuAcc = document.getElementById('imuAccChart').getContext('2d');
+    const imuAccChart = new Chart(ctxImuAcc, {
+        type: 'line',
+        data: {
+            datasets: [{
+                label: 'Accelerometer Total Change',
+                data: [],
+                borderColor: 'rgba(54, 162, 235, 1)',
+                backgroundColor: 'rgba(54, 162, 235, 0.2)',
+                fill: false,
+                tension: 0.1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        unit: 'second',
+                        displayFormats: {
+                            second: 'h:mm:ss a'
+                        }
+                    },
+                    title: {
+                        display: true,
+                        text: 'Timestamp'
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: 'Total Change'
+                    },
+                    beginAtZero: true
+                }
+            },
+            plugins: {
+                legend: {
+                    display: true
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const date = new Date(context.parsed.x);
+                            return `Timestamp: ${date.toLocaleTimeString()}, Acc Change: ${context.parsed.y}`;
+                        }
+                    }
+                }
+            },
+            animation: {
+                duration: 0
+            }
+        }
+    });
+
+    // IMU Gyroscope Line Chart
+    const ctxImuGyro = document.getElementById('imuGyroChart').getContext('2d');
+    const imuGyroChart = new Chart(ctxImuGyro, {
+        type: 'line',
+        data: {
+            datasets: [{
+                label: 'Gyroscope Total Change',
+                data: [],
+                borderColor: 'rgba(255, 206, 86, 1)',
+                backgroundColor: 'rgba(255, 206, 86, 0.2)',
+                fill: false,
+                tension: 0.1
+            }]
+        },
+        options: {
+            responsive: true,
+            scales: {
+                x: {
+                    type: 'time',
+                    time: {
+                        unit: 'second',
+                        displayFormats: {
+                            second: 'h:mm:ss a'
+                        }
+                    },
+                    title: {
+                        display: true,
+                        text: 'Timestamp'
+                    }
+                },
+                y: {
+                    title: {
+                        display: true,
+                        text: 'Total Change'
+                    },
+                    beginAtZero: true
+                }
+            },
+            plugins: {
+                legend: {
+                    display: true
+                },
+                tooltip: {
+                    callbacks: {
+                        label: function(context) {
+                            const date = new Date(context.parsed.x);
+                            return `Timestamp: ${date.toLocaleTimeString()}, Gyro Change: ${context.parsed.y}`;
+                        }
+                    }
+                }
+            },
+            animation: {
+                duration: 0
+            }
+        }
+    });
+
+    // 获取并更新数据
+    async function fetchData() {
+        try {
+            const response = await fetch('/api/data');
+            const data = await response.json();
+
+            updateXm125Chart(data.xm125);
+            updateHcsr04Chart(data.hcsr04);
+            updateImuAccChart(data.mpu6050);
+            updateImuGyroChart(data.mpu6050);
+        } catch (error) {
+            console.error('Error fetching data:', error);
+        }
+    }
+
+    // 更新 XM125 散点图
+    function updateXm125Chart(xm125Data) {
+        const dataset = xm125Chart.data.datasets[0].data;
+
+        xm125Data.forEach(item => {
+            const timestampMs = item.timestamp * 1000;
+            const distances = item.distances_m;
+
+            if (Array.isArray(distances)) {
+                distances.forEach(distance => {
+                    if (distance < 1.2) {
+                        dataset.push({ x: timestampMs, y: distance });
+                    }
+                });
+            } else {
+                // 如果是单个值
+                if (distances < 1.2) {
+                    dataset.push({ x: timestampMs, y: distances });
+                }
+            }
+
+            // 控制数据长度
+            while (dataset.length > maxDataPoints) {
+                dataset.shift();
             }
         });
 
-        // HC_SR04 Line Chart
-        const ctxHcsr04 = document.getElementById('hcsr04Chart').getContext('2d');
-        const hcsr04Chart = new Chart(ctxHcsr04, {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Distance (m)',
-                    data: [],
-                    borderColor: 'rgba(255, 99, 132, 1)',
-                    backgroundColor: 'rgba(255, 99, 132, 0.2)',
-                    fill: false,
-                    tension: 0.1
-                }]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    x: {
-                        type: 'linear',
-                        title: {
-                            display: true,
-                            text: 'Timestamp'
-                        },
-                        ticks: {
-                            callback: function(value) {
-                                return new Date(value * 1000).toLocaleTimeString();
-                            }
-                        }
-                    },
-                    y: {
-                        title: {
-                            display: true,
-                            text: 'Distance (m)'
-                        },
-                        min: 0,
-                        max: 1
-                    }
-                },
-                plugins: {
-                    legend: {
-                        display: false
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                const date = new Date(context.parsed.x * 1000);
-                                return `Timestamp: ${date.toLocaleTimeString()}, Distance: ${context.parsed.y}m`;
-                            }
-                        }
-                    }
-                },
-                animation: {
-                    duration: 0
-                }
+        xm125Chart.update('none');
+    }
+
+    // 更新 HC_SR04 折线图
+    function updateHcsr04Chart(hcsr04Data) {
+        const dataset = hcsr04Chart.data.datasets[0].data;
+
+        hcsr04Data.sort((a, b) => a.timestamp - b.timestamp);
+
+        hcsr04Data.forEach(item => {
+            dataset.push({
+                x: item.timestamp * 1000,
+                y: item.distance_m
+            });
+
+            while (dataset.length > maxDataPoints) {
+                dataset.shift();
             }
         });
 
-        // IMU Accelerometer Line Chart
-        const ctxImuAcc = document.getElementById('imuAccChart').getContext('2d');
-        const imuAccChart = new Chart(ctxImuAcc, {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Accelerometer Total Change',
-                    data: [],
-                    borderColor: 'rgba(54, 162, 235, 1)',
-                    backgroundColor: 'rgba(54, 162, 235, 0.2)',
-                    fill: false,
-                    tension: 0.1
-                }]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    x: {
-                        type: 'linear',
-                        title: {
-                            display: true,
-                            text: 'Timestamp'
-                        },
-                        ticks: {
-                            callback: function(value) {
-                                return new Date(value * 1000).toLocaleTimeString();
-                            }
-                        }
-                    },
-                    y: {
-                        title: {
-                            display: true,
-                            text: 'Total Change'
-                        },
-                        beginAtZero: true
-                    }
-                },
-                plugins: {
-                    legend: {
-                        display: true
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                const date = new Date(context.parsed.x * 1000);
-                                return `Timestamp: ${date.toLocaleTimeString()}, Acc Change: ${context.parsed.y}`;
-                            }
-                        }
-                    }
-                },
-                animation: {
-                    duration: 0
-                }
+        hcsr04Chart.update('none');
+    }
+
+    // 更新 IMU 加速度计折线图
+    function updateImuAccChart(imuData) {
+        const dataset = imuAccChart.data.datasets[0].data;
+
+        imuData.sort((a, b) => a.timestamp - b.timestamp);
+
+        imuData.forEach(item => {
+            dataset.push({
+                x: item.timestamp * 1000,
+                y: item.acc_change
+            });
+
+            while (dataset.length > maxDataPoints) {
+                dataset.shift();
             }
         });
 
-        // IMU Gyroscope Line Chart
-        const ctxImuGyro = document.getElementById('imuGyroChart').getContext('2d');
-        const imuGyroChart = new Chart(ctxImuGyro, {
-            type: 'line',
-            data: {
-                labels: [],
-                datasets: [{
-                    label: 'Gyroscope Total Change',
-                    data: [],
-                    borderColor: 'rgba(255, 206, 86, 1)',
-                    backgroundColor: 'rgba(255, 206, 86, 0.2)',
-                    fill: false,
-                    tension: 0.1
-                }]
-            },
-            options: {
-                responsive: true,
-                scales: {
-                    x: {
-                        type: 'linear',
-                        title: {
-                            display: true,
-                            text: 'Timestamp'
-                        },
-                        ticks: {
-                            callback: function(value) {
-                                return new Date(value * 1000).toLocaleTimeString();
-                            }
-                        }
-                    },
-                    y: {
-                        title: {
-                            display: true,
-                            text: 'Total Change'
-                        },
-                        beginAtZero: true
-                    }
-                },
-                plugins: {
-                    legend: {
-                        display: true
-                    },
-                    tooltip: {
-                        callbacks: {
-                            label: function(context) {
-                                const date = new Date(context.parsed.x * 1000);
-                                return `Timestamp: ${date.toLocaleTimeString()}, Gyro Change: ${context.parsed.y}`;
-                            }
-                        }
-                    }
-                },
-                animation: {
-                    duration: 0
-                }
+        imuAccChart.update('none');
+    }
+
+    // 更新 IMU 陀螺仪折线图
+    function updateImuGyroChart(imuData) {
+        const dataset = imuGyroChart.data.datasets[0].data;
+
+        imuData.sort((a, b) => a.timestamp - b.timestamp);
+
+        imuData.forEach(item => {
+            dataset.push({
+                x: item.timestamp * 1000,
+                y: item.gyro_change
+            });
+
+            while (dataset.length > maxDataPoints) {
+                dataset.shift();
             }
         });
 
-        // 获取并更新数据
-        async function fetchData() {
-            try {
-                const response = await fetch('/api/data');
-                const data = await response.json();
+        imuGyroChart.update('none');
+    }
 
-                updateXm125Chart(data.xm125);
-                updateHcsr04Chart(data.hcsr04);
-                updateImuAccChart(data.mpu6050);
-                updateImuGyroChart(data.mpu6050);
-            } catch (error) {
-                console.error('Error fetching data:', error);
-            }
-        }
+    // 初始数据加载
+    fetchData();
 
-        // 更新 XM125 散点图
-        function updateXm125Chart(xm125Data) {
-            const scatterData = [];
-
-            xm125Data.forEach(item => {
-                const timestamp = item.timestamp;
-                const distances = item.distances_m;
-
-                // 确保 distances 是一个数组
-                if (Array.isArray(distances)) {
-                    distances.forEach(distance => {
-                        if (distance < 1.2) {
-                            scatterData.push({
-                                x: timestamp,
-                                y: distance
-                            });
-                        }
-                    });
-                } else {
-                    // 如果 distances_m 不是数组，尝试处理单个值
-                    if (distances < 1.2) {
-                        scatterData.push({
-                            x: timestamp,
-                            y: distances
-                        });
-                    }
-                }
-            });
-
-            const currentData = xm125Chart.data.datasets[0].data;
-
-            scatterData.forEach(point => {
-                currentData.push(point);
-                if (currentData.length > maxDataPoints) {
-                    currentData.shift();
-                }
-            });
-
-            xm125Chart.update('none');
-        }
-
-        // 更新 HC_SR04 折线图
-        function updateHcsr04Chart(hcsr04Data) {
-            hcsr04Data.forEach(item => {
-                const timestamp = item.timestamp;
-                const distance = item.distance_m;
-
-                hcsr04Chart.data.labels.push(timestamp);
-                hcsr04Chart.data.datasets[0].data.push(distance);
-
-                if (hcsr04Chart.data.datasets[0].data.length > maxDataPoints) {
-                    hcsr04Chart.data.labels.shift();
-                    hcsr04Chart.data.datasets[0].data.shift();
-                }
-            });
-
-            hcsr04Chart.update('none');
-        }
-
-        // 更新 IMU 加速度计折线图
-        function updateImuAccChart(imuData) {
-            imuData.forEach(item => {
-                const timestamp = item.timestamp;
-                const accChange = item.acc_change;
-
-                imuAccChart.data.labels.push(timestamp);
-                imuAccChart.data.datasets[0].data.push(accChange);
-
-                if (imuAccChart.data.datasets[0].data.length > maxDataPoints) {
-                    imuAccChart.data.labels.shift();
-                    imuAccChart.data.datasets[0].data.shift();
-                }
-            });
-
-            imuAccChart.update('none');
-        }
-
-        // 更新 IMU 陀螺仪折线图
-        function updateImuGyroChart(imuData) {
-            imuData.forEach(item => {
-                const timestamp = item.timestamp;
-                const gyroChange = item.gyro_change;
-
-                imuGyroChart.data.labels.push(timestamp);
-                imuGyroChart.data.datasets[0].data.push(gyroChange);
-
-                if (imuGyroChart.data.datasets[0].data.length > maxDataPoints) {
-                    imuGyroChart.data.labels.shift();
-                    imuGyroChart.data.datasets[0].data.shift();
-                }
-            });
-
-            imuGyroChart.update('none');
-        }
-
-        // 初始数据加载
-        fetchData();
-
-        setInterval(fetchData, 200);
-    </script>
+    setInterval(fetchData, 500);
+</script>
 
 </body>
 </html>
