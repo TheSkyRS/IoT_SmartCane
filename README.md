@@ -41,6 +41,28 @@ This project is an smart cane designed to help visually impaired individuals nav
    - A webpage displaying real-time data from the four sensors (accelerometer, gyroscope, XM125, and HCSR04) for monitoring sensor status.
    - Another webpage stores and allows playback of audio files recorded after a fall incident.
 
+How to use:
+RPi:
+1. source ~/my_env/bin/activate
+2. python sensor.py
+3. python process_data.py
+
+
+GCP:
+gunicorn -w 4 -b 0.0.0.0:5000 app:app
+
+
+Website:
+Sensor:
+http://34.72.243.54:5000
+
+Fall audios:
+http://34.72.243.54:5000/fall_audios
+
+Youtube Video
+https://www.youtube.com/watch?v=8NUV6RBqdj8
+
+
 
 # 智能拐杖项目
 
