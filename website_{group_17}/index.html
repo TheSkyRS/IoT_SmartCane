@@ -1,0 +1,407 @@
+<!DOCTYPE HTML>
+<!--
+	Prologue by HTML5 UP
+	html5up.net | @n33co
+	Free for personal and commercial use under the CCA 3.0 license (html5up.net/license)
+-->
+<html>
+	<head>
+		<title>Columbia University EECS E4764 IoT Project Report #17 SmartCane</title>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<!--[if lte IE 8]><script src="assets/js/ie/html5shiv.js"></script><![endif]-->
+		<link rel="stylesheet" href="assets/css/main.css" />
+		<!--[if lte IE 8]><link rel="stylesheet" href="assets/css/ie8.css" /><![endif]-->
+		<!--[if lte IE 9]><link rel="stylesheet" href="assets/css/ie9.css" /><![endif]-->
+	</head>
+	<body>
+
+		<!-- Header -->
+			<div id="header">
+
+				<div class="top">
+
+					<!-- Logo -->
+						<div id="logo">
+							<!-- <span class="image avatar48"><img src="images/avatar.jpg" alt="" /></span> -->
+							<h1 id="title">SmartCane</h1>
+							<p>Columbia University <br>
+								EECS E4764 Fall'24 Internet of Things<br>
+								Intelligent and Connected Systems<br>
+								Team 17 Project Report
+							</p>
+						</div>
+
+					<!-- Nav -->
+						<nav id="nav">
+							<!--
+
+								Prologue's nav expects links in one of two formats:
+
+								1. Hash link (scrolls to a different section within the page)
+
+								   <li><a href="#foobar" id="foobar-link" class="icon fa-whatever-icon-you-want skel-layers-ignoreHref"><span class="label">Foobar</span></a></li>
+
+								2. Standard link (sends the user to another page/site)
+
+								   <li><a href="http://foobar.tld" id="foobar-link" class="icon fa-whatever-icon-you-want"><span class="label">Foobar</span></a></li>
+
+							-->
+							<ul>
+								<li><a href="#top" id="top-link" class="skel-layers-ignoreHref"><span class="icon fa-home">Abstract</span></a></li>
+								<li><a href="#motivation" id="motivation-link" class="skel-layers-ignoreHref"><span class="icon fa-th">Motivation</span></a></li>
+								<li><a href="#system" id="system-link" class="skel-layers-ignoreHref"><span class="icon fa-th">System</span></a></li>
+								<li><a href="#results" id="results-link" class="skel-layers-ignoreHref"><span class="icon fa-th">Results</span></a></li>
+								<li><a href="#references" id="references-link" class="skel-layers-ignoreHref"><span class="icon fa-th">References</span></a></li>
+								<li><a href="#team" id="team-link" class="skel-layers-ignoreHref"><span class="icon fa-user">Our Team</span></a></li>
+								<li><a href="#contact" id="contact-link" class="skel-layers-ignoreHref"><span class="icon fa-envelope">Contact</span></a></li>
+							</ul>
+						</nav>
+
+				</div>
+
+				<div class="bottom">
+
+					<!-- Social Icons -->
+						<ul class="icons">
+							<li><a href="#" class="icon fa-twitter"><span class="label">Twitter</span></a></li>
+							<li><a href="#" class="icon fa-facebook"><span class="label">Facebook</span></a></li>
+							<li><a href="#" class="icon fa-github"><span class="label">Github</span></a></li>
+							<li><a href="#" class="icon fa-dribbble"><span class="label">Dribbble</span></a></li>
+							<li><a href="#" class="icon fa-envelope"><span class="label">Email</span></a></li>
+						</ul>
+
+				</div>
+
+			</div>
+
+		<!-- Main -->
+			<div id="main">
+
+				<!-- Intro -->
+					<section id="top" class="one dark cover">
+						<div class="container">
+
+								<!-- <iframe width="560" height="315" src="https://www.youtube.com/watch?v=8NUV6RBqdj8" frameborder="0" allowfullscreen></iframe> -->
+								<iframe width="560" height="315" src="https://www.youtube.com/embed/8NUV6RBqdj8" frameborder="0" allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture" allowfullscreen></iframe>
+
+								<h2 class="alt">SmartCane</h2>
+								<p>This project is an smart cane designed to help visually impaired individuals navigate the world with confidence.</p>
+								<p>The SmartCane is an assistive device designed for visually impaired individuals, integrating a Raspberry Pi, microphone, speaker, and three sensors—HCSR04 ultrasonic sensor, XM125 millimeter-wave radar, and MPU6050 IMU. It provides audio alerts for steps and obstacles, adjusts notifications based on motion, and detects falls. Upon a fall, it sends alerts to family via Ntfy and uploads a 10-second audio recording to the cloud for review. A built-in voice assistant enables natural interaction while pausing sensor alerts for clarity. A web interface offers real-time sensor data and access to uploaded recordings, enhancing mobility and safety for users.</p>
+
+
+							<footer>
+								<a href="#motivation" class="button scrolly">Motivation</a>
+							</footer>
+
+						</div>
+					</section>
+
+				<!-- Portfolio -->
+					<section id="motivation" class="two">
+						<div class="container">
+
+							<header>
+								<h2>Motivation</h2>
+							</header>
+
+							<p align="left">Navigating the world safely and independently remains a significant challenge for visually impaired individuals. Traditional mobility aids, such as basic white canes, provide limited feedback and are unable to adapt to complex, dynamic environments. These limitations increase the risk of accidents, such as missing steps, colliding with obstacles, or struggling to communicate during emergencies.
+
+								The SmartCane addresses these challenges by leveraging modern technologies to enhance situational awareness and communication. By integrating ultrasonic, radar, and motion sensors with real-time audio feedback, the SmartCane provides precise and adaptive guidance. The inclusion of fall detection and a cloud-connected alert system ensures immediate support in critical situations. Additionally, its voice assistant and web interface empower users with access to advanced tools for better interaction and monitoring.
+								
+								This project aims to bridge the gap between assistive technology and the needs of visually impaired individuals, fostering independence, safety, and confidence in their daily lives.</p>
+
+
+
+						</div>
+					</section>
+
+
+					<section id="system" class="three">
+						<div class="container">
+
+							<header>
+								<h2>System</h2>
+							</header>
+
+							<p align="left">The cane integrates a Raspberry Pi, microphone, speaker, and three sensors: the HCSR04 ultrasonic distance sensor, XM125 Pulse Coherent Radar millimeter-wave sensor (for obstacle distance measurement), and MPU6050 6-DoF Accelerometer and Gyro (also called IMU).</p>
+
+							<h3 align="left">Architecture</h3>
+							<img src="images/architecture.png" alt="SmartCane Architecture" style="max-width:100%; height:auto;">
+							
+
+
+							<h3 align="left">Technical Components</h3>
+							
+							<ol style="text-align: left; margin-left: 20px; font-family: Arial, sans-serif; line-height: 1.6;">
+								<li style="margin-bottom: 20px;">
+									<strong>HCSR04 Ultrasonic Sensor:</strong>
+									<ul style="margin-left: 20px;">
+										<li>1. Detects changes in step height to prevent the user from tripping or missing a step.</li>
+										<li>2. When the sensor detects a decrease in distance, the speaker announces "Upstairs."</li>
+										<li>3. When the sensor detects an increase in distance, the speaker announces "Downstairs."</li>
+									</ul>
+								</li>
+								<li style="margin-bottom: 20px;">
+									<strong>XM125 Radar Sensor:</strong>
+									<ul style="margin-left: 20px;">
+										<li>1. Detects obstacles in the forward area and returns distance data.</li>
+										<li>2. When obstacles enter the detection range, the speaker emits a single-frequency tone.</li>
+										<li>3. The tone's frequency increases as the distance to the obstacle decreases, providing precise proximity feedback.</li>
+										<li>4. Single-frequency sounds are chosen for their high sensitivity among visually impaired individuals and their distinctiveness in noisy environments.</li>
+									</ul>
+								</li>
+								<li style="margin-bottom: 20px;">
+									<strong>MPU6050 IMU:</strong>
+									<ul style="margin-left: 20px;">
+										<li>1. Tracks the cane's motion state to determine if the user is walking or stationary.</li>
+										<li>2. Step detection using HCSR04 is only active when the cane is stationary to avoid false positives caused by the sensor's physical limitations.</li>
+										<li>3. Detects falls and triggers two actions:
+											<ul style="margin: 0; padding: 0;">
+												<li style="margin: 0; padding: 0;">i. Sends a notification (text message) to the user's family via Ntfy.</li>
+												<li style="margin: 0; padding: 0;">ii. Uploads a 10-second audio recording of the environment to GCP, accessible via a website.</li>
+											</ul>											
+										<li>4. During audio recording, XM125 and HCSR04 sound alerts are paused for clear audio capture, aiding the family in understanding the user's surroundings.</li>
+									</ul>
+								</li>
+								<li style="margin-bottom: 20px;">
+									<strong>Voice Assistant:</strong>
+									<ul style="margin-left: 20px;">
+										<li>1. Activated by gently rotating the cane.</li>
+										<li>2. Allows users to communicate with the voice assistant directly.</li>
+										<li>3. During interactions with the large language model, XM125 and HCSR04 sound alerts are paused for clear microphone input.</li>
+										<li>4. Converts the user's speech to text for interaction with the language model. While awaiting the model's response, normal sensor functions remain active to ensure the user is aware of their surroundings.</li>
+										<li>5. Once the response is received, it is converted to speech and played through the speaker, temporarily pausing XM125 and HCSR04 alerts to avoid overlapping sounds.</li>
+									</ul>
+								</li>
+							</ol>
+							
+							<h4 style="text-align: left; font-family: Arial, sans-serif; margin-top: 30px;">Additional Features:</h4>
+							<ol style="text-align: left; margin-left: 20px; font-family: Arial, sans-serif; line-height: 1.6;">
+								<li>
+									<strong>Web Interfaces:</strong>
+									<ul style="margin-left: 20px;">
+										<li>1. A webpage displaying real-time data from the four sensors (accelerometer, gyroscope, XM125, and HCSR04) for monitoring sensor status.</li>
+										<li>2. Another webpage stores and allows playback of audio files recorded after a fall incident.</li>
+									</ul>
+								</li>
+							</ol>
+							
+							<h3 align="left">Prototype</h3>
+							<img src="images/result.jpg" alt="SmartCane" style="max-width:50%; height:auto;">
+							<p style="text-align: center;">SmartCane Prototype</p>
+						</div>
+					</section>
+
+
+					<section id="results" class="two">
+						<div class="container">
+					
+							<!-- Section Header -->
+							<header>
+								<h2>Results</h2>
+							</header>
+					
+							<!-- Function Display 1 -->
+							<article class="item">
+								<a href="#" class="image fit"><img src="images/stair.png" alt="Detecting stairs(upstairs or downstairs)" /></a>
+								<header>
+									<h3>Function Display 1</h3>
+									<p>Detecting stairs</p>
+								</header>
+							</article>
+							<article class="item">
+								<a href="#" class="image fit"><img src="images/wall.png" alt="Detecting wall surfaces" /></a>
+								<header>
+									<p>Detecting wall surfaces</p>
+								</header>
+							</article>
+					
+							<!-- Function Display 2 -->
+							<article class="item">
+								<a href="#" class="image fit"><img src="images/all obstacles.png" alt="Detecting all obstacles within the detection range" /></a>
+								<header>
+									<h3>Function Display 2</h3>
+									<p>Detecting all obstacles within the detection range</p>
+								</header>
+							</article>
+					
+							<!-- Function Display 3 -->
+							<article class="item">
+								<header>
+									<h3>Function Display 3</h3>
+									<p>Interact with AI system via voice</p>
+								</header>
+							</article>
+					
+							<!-- Function Display 4 -->
+							<article class="item">
+								<a href="#" class="image fit"><img src="images/fall.png" alt="Fall detection, recording sound, and send alerts" /></a>
+								<header>
+									<h3>Function Display 4</h3>
+									<p>Fall detection, recording sound, and send alerts</p>
+								</header>
+							</article>
+					
+							<!-- Website Links -->
+							<div style="text-align: center; margin-top: 30px;">
+								<h3>Website Links</h3>
+								<!-- Sensor Website -->
+								<div>
+									<a href="http://34.72.243.54:5000" target="_blank">
+										<img src="images/sensor data.png" alt="Sensor Website" style="max-width: 100%; height: auto; display: block; margin: 10px auto;">
+									</a>
+									<p><a href="http://34.72.243.54:5000" target="_blank">Sensor Website</a></p>
+								</div>
+								<!-- Fall Audios Website -->
+								<div>
+									<a href="http://34.72.243.54:5000/fall_audios" target="_blank">
+										<img src="images/fall audio.png" alt="Fall Audios Website" style="max-width: 100%; height: auto; display: block; margin: 10px auto;">
+									</a>
+									<p><a href="http://34.72.243.54:5000/fall_audios" target="_blank">Fall Audios Website</a></p>
+								</div>
+							</div>
+						</div>
+					</section>
+					
+					
+
+					<section id="references" class="three">
+						<div class="container">
+					
+							<!-- Header -->
+							<header>
+								<h2>References</h2>
+							</header>
+					
+							<!-- References Content -->
+							<p align="left">
+								<strong>XM125:</strong>
+								<ol>
+									<li><a href="https://docs.sparkfun.com/SparkFun_Qwiic_Pulsed_Radar_Sensor_XM125/introduction/" target="_blank">https://docs.sparkfun.com/SparkFun_Qwiic_Pulsed_Radar_Sensor_XM125/introduction/</a></li>
+									<li><a href="https://docs.acconeer.com/en/latest/" target="_blank">https://docs.acconeer.com/en/latest/</a></li>
+								</ol>
+							</p>
+							<p align="left">
+								<strong>HCSR04:</strong>
+								<ol>
+									<li><a href="https://docs.circuitpython.org/projects/hcsr04/en/latest/" target="_blank">https://docs.circuitpython.org/projects/hcsr04/en/latest/</a></li>
+								</ol>
+							</p>
+							<p align="left">
+								<strong>MPU6050:</strong>
+								<ol>
+									<li><a href="https://invensense.tdk.com/wp-content/uploads/2015/02/MPU-6000-Datasheet1.pdf" target="_blank">https://invensense.tdk.com/wp-content/uploads/2015/02/MPU-6000-Datasheet1.pdf</a></li>
+								</ol>
+							</p>
+					
+						</div>
+					</section>
+					
+					
+
+
+				<!-- About Me -->
+					<section id="team" class="two">
+						<div class="container">
+
+							<header>
+								<h2>Our Team</h2>
+							</header>
+
+							<!-- <a href="#" class="image featured"><img src="images/pic08.jpg" alt="" /></a> -->
+
+
+							<div class="row">
+								<div class="4u 12u$(mobile)">
+									<article class="item">
+										<a href="#" class="image fit"><img src="images/yonghao.jpg" alt="" /></a>
+										<header>
+											<h3>Yonghao Lin</h3>
+											<p>MSCE in Columbia University<br> Link: <a href="https://www.linkedin.com/in/yonghaolin/">Yonghao Lin</a></p>
+										</header>
+									</article>
+								</div>
+								<div class="4u 12u$(mobile)">
+									<article class="item">
+										<a href="#" class="image fit"><img src="images/5.jpg" alt="" /></a>
+										<header>
+											<h3>Zhenqi Li</h3>
+											<p>MSCE in Columbia University<br> Link: <a href="https://www.linkedin.com/in/albert2025/">Zhenqi Li</a></p>
+										</header>
+									</article>
+								</div>
+								<div class="4u$ 12u$(mobile)">
+									<article class="item">
+										<a href="#" class="image fit"><img src="images/yang.png" alt="" /></a>
+										<header>
+											<h3>Yang Cao</h3>
+											<p>MSCE in Columbia University<br> Link: <a href="https://www.linkedin.com/in/yangcao1789/">Yang Cao</a></p>
+										</header>
+									</article>
+								</div>
+							</div>
+
+						</div>
+					</section>
+
+				<!-- Contact -->
+					<section id="contact" class="four">
+						<div class="container">
+
+							<header>
+								<h2>Contact</h2>
+							</header>
+
+							<p align="left">
+								<strong>Yonghao Lin: </strong>yl5763@columbia.edu</br>
+								<strong>Zhenqi Li: </strong>zl3508@columbia.edu</br>
+								<strong>Yang Cao: </strong>yc4535@columbia.edu</br>
+						
+							</br>
+								<strong>Columbia University </strong><a href="http://www.ee.columbia.edu">Department of Electrical Engineering</a><br>
+								<!-- <strong>Class Website:</strong>
+									<a href="https://edblogs.columbia.edu/eecs4764-001-2019-3/">Columbia University EECS E4764 Fall '22 IoT</a></br> -->
+								<strong>Instructor:</strong> <a href="http://fredjiang.com/">Professsor Xiaofan (Fred) Jiang</a>
+							</p>
+
+
+							<!-- <form method="post" action="#">
+								<div class="row">
+									<div class="6u 12u$(mobile)"><input type="text" name="name" placeholder="Name" /></div>
+									<div class="6u$ 12u$(mobile)"><input type="text" name="email" placeholder="Email" /></div>
+									<div class="12u$">
+										<textarea name="message" placeholder="Message"></textarea>
+									</div>
+									<div class="12u$">
+										<input type="submit" value="Send Message" />
+									</div>
+								</div>
+							</form> -->
+
+						</div>
+					</section>
+
+			</div>
+
+		<!-- Footer -->
+			<div id="footer">
+
+				<!-- Copyright -->
+					<ul class="copyright">
+						<li>&copy; IoT Project | All rights reserved.</li><li>Design: <a href="http://html5up.net">HTML5 UP</a></li>
+					</ul>
+
+			</div>
+
+		<!-- Scripts -->
+			<script src="assets/js/jquery.min.js"></script>
+			<script src="assets/js/jquery.scrolly.min.js"></script>
+			<script src="assets/js/jquery.scrollzer.min.js"></script>
+			<script src="assets/js/skel.min.js"></script>
+			<script src="assets/js/util.js"></script>
+			<!--[if lte IE 8]><script src="assets/js/ie/respond.min.js"></script><![endif]-->
+			<script src="assets/js/main.js"></script>
+
+	</body>
+</html>
