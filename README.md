@@ -4,9 +4,6 @@ This project is an smart cane designed to help visually impaired individuals nav
 
 ![image](https://github.com/user-attachments/assets/28623ded-caeb-40eb-b455-9d6cb24def9f)
 
-
-![StateTransfer](./state.png "StateTransfer")
-
 ### Features and Functions:
 
 #### 1. **HCSR04 Ultrasonic Sensor**:
